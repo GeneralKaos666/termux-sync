@@ -7,7 +7,7 @@ use ratatui::widgets::{
 };
 
 use crate::app::{ACTIONS, App, Focus};
-use crate::data::{human_size, parse_log_line};
+use crate::data::{backup_age, human_size, parse_log_line};
 
 pub const MIN_WIDTH: u16 = 48;
 pub const MIN_HEIGHT: u16 = 12;
@@ -17,7 +17,10 @@ const ACCENT: Color = Color::Cyan;
 const SUCCESS: Color = Color::Green;
 const WARN: Color = Color::Yellow;
 const DANGER: Color = Color::Red;
+const MAGENTA: Color = Color::Magenta;
 const MUTED: Color = Color::DarkGray;
+const GRADIENT_FROM: Color = Color::Rgb(70, 220, 255);
+const GRADIENT_TO: Color = Color::Rgb(210, 120, 255);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutPlan {
@@ -44,85 +47,145 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    let [header, body, footer] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(2),
-    ])
-    .areas(area);
+    let show_cards = area.width >= SPLIT_WIDTH && area.height >= 20;
 
-    render_header(frame, header, app);
+    if show_cards {
+        let [hero, cards, body, footer] = Layout::vertical([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(2),
+        ])
+        .areas(area);
 
-    match plan(area) {
-        LayoutPlan::Split => render_split(frame, body, app),
-        _ => render_single(frame, body, app),
+        render_hero(frame, hero, app);
+        render_stats(frame, cards, app);
+        render_body(frame, body, app);
+        render_footer(frame, footer, app);
+    } else {
+        let [hero, body, footer] = Layout::vertical([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(2),
+        ])
+        .areas(area);
+
+        render_hero(frame, hero, app);
+        render_body(frame, body, app);
+        render_footer(frame, footer, app);
     }
-
-    render_footer(frame, footer, app);
 
     if app.show_help {
         render_help(frame, area);
     }
 }
 
-fn render_header(frame: &mut Frame, area: Rect, app: &App) {
-    let config = &app.snapshot.config;
+fn render_hero(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(fg(ACCENT))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(inner);
+
+    let mut title = gradient_spans("TERMUX SYNC");
+    title.push(Span::styled("   backup dashboard", fg(MUTED)));
+    if area.width >= 100 {
+        title.push(Span::styled(
+            format!(
+                "   {} · max {}",
+                app.snapshot.config.compression.to_uppercase(),
+                app.snapshot.config.max_backups
+            ),
+            fg(MUTED),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(title)), left);
+
     let count = app.snapshot.backups.len();
     let count_label = if count == 1 {
         "1 BACKUP".to_string()
     } else {
         format!("{count} BACKUPS")
     };
-    let count_color = if count == 0 { MUTED } else { SUCCESS };
-
-    let mut line = vec![
-        Span::styled("◆ ", fg(ACCENT).bold()),
-        Span::styled("termux-sync", fg(ACCENT).bold()),
-        Span::styled("  tui", fg(MUTED)),
-        Span::raw("   "),
-        badge(&config.storage.to_uppercase(), ACCENT),
+    let mut chips = vec![
+        badge(&app.snapshot.config.storage.to_uppercase(), ACCENT),
         Span::raw(" "),
-        badge(&count_label, count_color),
+        badge(&count_label, if count == 0 { MUTED } else { SUCCESS }),
     ];
-
-    if area.width >= 100 {
-        line.push(Span::styled("   ", fg(MUTED)));
-        line.push(Span::styled(&config.local_path, fg(MUTED)));
-        line.push(Span::styled("  ·  ", fg(MUTED)));
-        line.push(Span::styled(
-            format!(
-                "{} · max {} · auto {}",
-                config.compression.to_uppercase(),
-                config.max_backups,
-                config.schedule
-            ),
-            fg(MUTED),
-        ));
-    }
-
     if app.snapshot.warning.is_some() {
-        line.push(Span::styled("   [!]", fg(WARN).bold()));
+        chips.push(Span::raw(" "));
+        chips.push(Span::styled("[!]", fg(WARN).bold()));
     }
-
-    frame.render_widget(Paragraph::new(Line::from(line)), area);
+    frame.render_widget(
+        Paragraph::new(Line::from(chips)).alignment(Alignment::Right),
+        right,
+    );
 }
 
-fn render_split(frame: &mut Frame, area: Rect, app: &mut App) {
-    let [left, right] =
-        Layout::horizontal([Constraint::Length(26), Constraint::Min(0)]).areas(area);
-    let [backups, output] =
-        Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(right);
+fn render_stats(frame: &mut Frame, area: Rect, app: &App) {
+    let [backups, stored, packages, auto] = Layout::horizontal([Constraint::Fill(1); 4])
+        .spacing(1)
+        .areas(area);
 
-    render_actions(frame, left, app);
-    render_backups(frame, backups, app);
-    render_output(frame, output, app);
+    let total_size: u64 = app.snapshot.backups.iter().map(|backup| backup.size).sum();
+    let latest_packages = app
+        .snapshot
+        .backups
+        .first()
+        .map_or(0, |backup| backup.packages);
+
+    stat_card(
+        frame,
+        backups,
+        "BACKUPS",
+        &app.snapshot.backups.len().to_string(),
+        "saved",
+        SUCCESS,
+    );
+    stat_card(frame, stored, "STORED", &human_size(total_size), "", ACCENT);
+    stat_card(
+        frame,
+        packages,
+        "PACKAGES",
+        &latest_packages.to_string(),
+        "latest",
+        MAGENTA,
+    );
+    stat_card(frame, auto, "AUTO", &app.snapshot.config.schedule, "", WARN);
 }
 
-fn render_single(frame: &mut Frame, area: Rect, app: &mut App) {
-    match app.focus {
-        Focus::Actions => render_actions(frame, area, app),
-        Focus::Backups => render_backups(frame, area, app),
-        Focus::Output => render_output(frame, area, app),
+fn stat_card(frame: &mut Frame, area: Rect, title: &str, value: &str, unit: &str, color: Color) {
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(fg(color))
+        .title(Span::styled(format!(" {title} "), fg(color).bold()));
+    let line = Line::from(vec![
+        Span::styled(value.to_string(), fg(color).bold()),
+        Span::styled(format!(" {unit}"), fg(MUTED)),
+    ]);
+    frame.render_widget(Paragraph::new(line).block(block), area);
+}
+
+fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
+    if plan(frame.area()) == LayoutPlan::Split {
+        let [left, right] =
+            Layout::horizontal([Constraint::Length(26), Constraint::Min(0)]).areas(area);
+        let [backups, output] =
+            Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(right);
+
+        render_actions(frame, left, app);
+        render_backups(frame, backups, app);
+        render_output(frame, output, app);
+    } else {
+        match app.focus {
+            Focus::Actions => render_actions(frame, area, app),
+            Focus::Backups => render_backups(frame, area, app),
+            Focus::Output => render_output(frame, area, app),
+        }
     }
 }
 
@@ -133,8 +196,13 @@ fn render_actions(frame: &mut Frame, area: Rect, app: &mut App) {
         .map(|item| ListItem::new(format!("{:<width$}", item.label, width = width)))
         .collect();
     let list = List::new(items)
-        .block(pane_block("Actions", app.focus == Focus::Actions))
-        .highlight_style(selection_style());
+        .block(pane_block(
+            "Actions",
+            None,
+            app.focus == Focus::Actions,
+            ACCENT,
+        ))
+        .highlight_style(selection_style(ACCENT));
 
     frame.render_stateful_widget(list, area, &mut app.action_state);
 }
@@ -148,7 +216,12 @@ fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
         parts.push(format!("v{} {}", backup.version, backup.compression));
         parts.join(" · ")
     });
-    let block = pane_block_with_detail("Backups", detail.as_deref(), app.focus == Focus::Backups);
+    let block = pane_block(
+        "Backups",
+        detail.as_deref(),
+        app.focus == Focus::Backups,
+        SUCCESS,
+    );
 
     if app.snapshot.backups.is_empty() {
         let inner = block.inner(area);
@@ -173,6 +246,15 @@ fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
+    let max_size = app
+        .snapshot
+        .backups
+        .iter()
+        .map(|backup| backup.size)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+
     let rows = app.snapshot.backups.iter().map(|backup| {
         let label = if backup.label.is_empty() {
             String::new()
@@ -180,32 +262,34 @@ fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
             format!("  {}", backup.label)
         };
         Row::new(vec![
-            Cell::from(format!("{}{}", backup.name, label)),
-            Cell::from(backup.date.clone()),
+            Cell::from(format!("{}{}", short_name(&backup.name), label)),
+            Cell::from(backup_age(backup)),
             Cell::from(human_size(backup.size)),
+            Cell::from(size_bar(backup.size, max_size, 6)).style(fg(SUCCESS)),
             Cell::from(backup.packages.to_string()),
         ])
     });
 
-    let header = Row::new(["NAME", "DATE", "SIZE", "PKGS"])
+    let header = Row::new(["NAME", "AGE", "SIZE", "USED", "PKGS"])
         .style(fg(MUTED).bold())
         .bottom_margin(0);
     let widths = [
         Constraint::Min(12),
-        Constraint::Length(16),
+        Constraint::Length(5),
         Constraint::Length(9),
+        Constraint::Length(6),
         Constraint::Length(4),
     ];
     let table = Table::new(rows, widths)
         .header(header)
         .block(block)
-        .row_highlight_style(selection_style());
+        .row_highlight_style(selection_style(SUCCESS));
 
     frame.render_stateful_widget(table, area, &mut app.backup_state);
 }
 
 fn render_output(frame: &mut Frame, area: Rect, app: &App) {
-    let block = pane_block("Output", app.focus == Focus::Output);
+    let block = pane_block("Output", None, app.focus == Focus::Output, MAGENTA);
     let inner_height = block.inner(area).height as usize;
     let len = app.output.len();
     let max_offset = len.saturating_sub(inner_height);
@@ -229,20 +313,34 @@ fn render_log_line(line: &str) -> Line<'static> {
         return Line::from(line.to_string());
     };
 
-    let level_style = match parts.level.as_str() {
-        "INFO" => fg(SUCCESS),
-        "WARN" | "WARNING" => fg(WARN).bold(),
-        "ERROR" | "FAIL" => fg(DANGER).bold(),
-        _ => fg(MUTED),
-    };
-
     Line::from(vec![
         Span::styled(parts.timestamp, fg(MUTED)),
-        Span::raw("  "),
-        Span::styled(format!("{:<7}", parts.level), level_style),
+        Span::raw(" "),
+        level_chip(&parts.level),
         Span::raw(" "),
         Span::raw(parts.message),
     ])
+}
+
+fn level_chip(level: &str) -> Span<'static> {
+    let (label, color) = match level {
+        "INFO" => ("INFO", SUCCESS),
+        "WARN" | "WARNING" => ("WARN", WARN),
+        "ERROR" | "FAIL" => ("ERROR", DANGER),
+        "DEBUG" => ("DEBUG", MUTED),
+        other => (other, MUTED),
+    };
+    if no_color() {
+        Span::styled(format!("[{label}]"), Style::new().bold())
+    } else {
+        Span::styled(
+            format!(" {label} "),
+            Style::new()
+                .fg(Color::Black)
+                .bg(color)
+                .add_modifier(Modifier::BOLD),
+        )
+    }
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
@@ -263,15 +361,20 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(app.status.clone(), status_style),
     ]);
 
-    let mut hint_spans = vec![Span::styled(
-        format!(" ▸ {} ", app.focus.title()),
-        fg(ACCENT).bold(),
-    )];
-    for (index, (key, action)) in hints(app.focus, area.width >= 80).iter().enumerate() {
+    let wide = area.width >= 80;
+    let mut hint_spans = vec![
+        badge(&app.focus.title().to_uppercase(), ACCENT),
+        Span::raw("  "),
+    ];
+    for (index, (key, action)) in hints(app.focus, wide).iter().enumerate() {
         if index > 0 {
             hint_spans.push(Span::raw("  "));
         }
-        hint_spans.push(Span::styled(*key, fg(ACCENT).bold()));
+        if wide {
+            hint_spans.push(keycap(key));
+        } else {
+            hint_spans.push(Span::styled(*key, fg(ACCENT).bold()));
+        }
         if !action.is_empty() {
             hint_spans.push(Span::raw(" "));
             hint_spans.push(Span::styled(*action, fg(MUTED)));
@@ -295,8 +398,8 @@ fn hints(focus: Focus, wide: bool) -> &'static [(&'static str, &'static str)] {
             ("q", "quit"),
         ],
         (Focus::Actions, false) => &[
-            ("↑↓", "move"),
-            ("Enter", "run"),
+            ("↑↓", ""),
+            ("Enter", ""),
             ("Tab", ""),
             ("R", ""),
             ("?", ""),
@@ -326,7 +429,7 @@ fn hints(focus: Focus, wide: bool) -> &'static [(&'static str, &'static str)] {
             ("?", "help"),
             ("q", "quit"),
         ],
-        (Focus::Output, false) => &[("↑↓", "scroll"), ("Tab", ""), ("?", ""), ("q", "")],
+        (Focus::Output, false) => &[("↑↓", ""), ("Tab", ""), ("?", ""), ("q", "")],
     }
 }
 
@@ -357,7 +460,10 @@ fn render_too_small(frame: &mut Frame, area: Rect) {
 
 fn render_help(frame: &mut Frame, area: Rect) {
     let popup = centered(area, 64, 24);
-    let mut lines = vec![Line::from(Span::styled("Keys", fg(ACCENT).bold()))];
+    let mut lines = vec![Line::from(vec![
+        Span::styled("◆ ", fg(ACCENT).bold()),
+        Span::styled("HELP", fg(ACCENT).bold()),
+    ])];
     for (key, action) in [
         ("↑ / ↓", "move selection"),
         ("Enter", "run action or restore selected backup"),
@@ -391,7 +497,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
 
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(Text::from(lines)).block(pane_block("Help", true)),
+        Paragraph::new(Text::from(lines)).block(pane_block("Help", None, true, ACCENT)),
         popup,
     );
 }
@@ -415,13 +521,13 @@ fn fg(color: Color) -> Style {
     }
 }
 
-fn selection_style() -> Style {
+fn selection_style(color: Color) -> Style {
     if no_color() {
         Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
     } else {
         Style::new()
             .fg(Color::Black)
-            .bg(ACCENT)
+            .bg(color)
             .add_modifier(Modifier::BOLD)
     }
 }
@@ -440,19 +546,73 @@ fn badge(text: &str, color: Color) -> Span<'static> {
     }
 }
 
+fn keycap(key: &str) -> Span<'static> {
+    if no_color() {
+        Span::styled(format!("[{key}]"), Style::new().bold())
+    } else {
+        Span::styled(
+            format!(" {key} "),
+            Style::new()
+                .fg(Color::White)
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
+    }
+}
+
+fn gradient_spans(text: &str) -> Vec<Span<'static>> {
+    if no_color() {
+        return vec![Span::styled(text.to_string(), Style::new().bold())];
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let last = chars.len().saturating_sub(1).max(1) as f32;
+    chars
+        .into_iter()
+        .enumerate()
+        .map(|(index, ch)| {
+            let t = index as f32 / last;
+            let color = lerp_color(GRADIENT_FROM, GRADIENT_TO, t);
+            Span::styled(ch.to_string(), Style::new().fg(color).bold())
+        })
+        .collect()
+}
+
+fn lerp_color(from: Color, to: Color, t: f32) -> Color {
+    let (Color::Rgb(fr, fg, fb), Color::Rgb(tr, tg, tb)) = (from, to) else {
+        return from;
+    };
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    Color::Rgb(mix(fr, tr), mix(fg, tg), mix(fb, tb))
+}
+
+fn short_name(name: &str) -> &str {
+    name.strip_prefix("termux_backup_").unwrap_or(name)
+}
+
+fn size_bar(size: u64, max: u64, width: usize) -> String {
+    if max == 0 {
+        return " ".repeat(width);
+    }
+    let filled = ((size as f64 / max as f64) * width as f64).round() as usize;
+    let filled = filled.clamp(0, width);
+    if no_color() {
+        format!("{}{}", "#".repeat(filled), "-".repeat(width - filled))
+    } else {
+        format!("{}{}", "▰".repeat(filled), "▱".repeat(width - filled))
+    }
+}
+
 fn no_color() -> bool {
     std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
 }
 
-fn pane_block(title: &str, focused: bool) -> Block<'static> {
-    pane_block_with_detail(title, None, focused)
-}
-
-fn pane_block_with_detail(title: &str, detail: Option<&str>, focused: bool) -> Block<'static> {
+fn pane_block(title: &str, detail: Option<&str>, focused: bool, color: Color) -> Block<'static> {
     let style = if focused {
-        fg(ACCENT).add_modifier(Modifier::BOLD)
+        fg(color).add_modifier(Modifier::BOLD)
+    } else if no_color() {
+        Style::new()
     } else {
-        fg(MUTED)
+        fg(color).add_modifier(Modifier::DIM)
     };
     let marker = if focused { "▸" } else { " " };
     let mut title_spans = vec![Span::styled(format!(" {marker} {title} "), style)];
@@ -485,6 +645,7 @@ mod tests {
                 size: 3072,
                 version: "1.3.9".to_string(),
                 compression: "GZ".to_string(),
+                modified: None,
             }],
             log: vec!["2026-01-01 12:00 [INFO] Backup completed".to_string()],
             warning: None,
@@ -517,16 +678,26 @@ mod tests {
     }
 
     #[test]
-    fn wide_frame_shows_badges_panes_and_selected_detail() {
+    fn wide_frame_shows_hero_stats_panes_and_detail() {
         let frame = render_at(100, 30);
-        assert!(frame.contains("termux-sync"));
+        assert!(frame.contains("TERMUX SYNC"));
+        assert!(frame.contains("BACKUPS"));
+        assert!(frame.contains("STORED"));
+        assert!(frame.contains("PACKAGES"));
         assert!(frame.contains("LOCAL"));
         assert!(frame.contains("Actions"));
-        assert!(frame.contains("Backups"));
         assert!(frame.contains("Output"));
-        assert!(frame.contains("termux_backup"));
         assert!(frame.contains("v1.3.9 GZ"));
         assert!(frame.contains("╭"));
+    }
+
+    #[test]
+    fn narrow_frame_drops_cards_but_keeps_hero() {
+        let frame = render_at(60, 20);
+        assert!(frame.contains("TERMUX SYNC"));
+        assert!(frame.contains("ACTIONS"));
+        assert!(!frame.contains("STORED"));
+        assert!(!frame.contains("Backups"));
     }
 
     #[test]
@@ -534,14 +705,6 @@ mod tests {
         let frame = render_at(100, 30);
         assert!(frame.contains("INFO"));
         assert!(frame.contains("Backup completed"));
-    }
-
-    #[test]
-    fn narrow_frame_shows_only_focused_pane() {
-        let frame = render_at(60, 20);
-        assert!(frame.contains("Actions"));
-        assert!(frame.contains("▸ Actions"));
-        assert!(!frame.contains("Backups"));
     }
 
     #[test]
@@ -567,7 +730,23 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(content.contains("Help"));
+        assert!(content.contains("HELP"));
         assert!(content.contains("switch pane"));
+    }
+
+    #[test]
+    fn backup_names_drop_the_app_prefix() {
+        assert_eq!(
+            short_name("termux_backup_20260101_120000"),
+            "20260101_120000"
+        );
+        assert_eq!(short_name("custom-name"), "custom-name");
+    }
+
+    #[test]
+    fn size_bar_fills_proportionally() {
+        assert_eq!(size_bar(0, 100, 4), "▱▱▱▱");
+        assert_eq!(size_bar(50, 100, 4), "▰▰▱▱");
+        assert_eq!(size_bar(100, 100, 4), "▰▰▰▰");
     }
 }

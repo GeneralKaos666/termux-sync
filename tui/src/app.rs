@@ -446,6 +446,7 @@ mod tests {
                     size: 1024,
                     version: "1.3.9".to_string(),
                     compression: "GZ".to_string(),
+                    modified: None,
                 },
                 Backup {
                     name: "backup-two".to_string(),
@@ -455,6 +456,7 @@ mod tests {
                     size: 2048,
                     version: "1.3.9".to_string(),
                     compression: "GZ".to_string(),
+                    modified: None,
                 },
             ],
             log: vec!["ready".to_string()],

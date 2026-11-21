@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
@@ -23,6 +24,7 @@ pub struct Backup {
     pub size: u64,
     pub version: String,
     pub compression: String,
+    pub modified: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,7 +180,10 @@ pub fn load_local_backups(root: &Path) -> Result<Vec<Backup>, String> {
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
-        if let Some(backup) = parse_manifest(&value) {
+        if let Some(mut backup) = parse_manifest(&value) {
+            backup.modified = fs::metadata(&manifest)
+                .and_then(|metadata| metadata.modified())
+                .ok();
             backups.push(backup);
         }
     }
@@ -228,7 +233,80 @@ pub fn parse_manifest(value: &Value) -> Option<Backup> {
         size,
         version: string_field(value, "version", "—"),
         compression: string_field(value, "compression", "—").to_uppercase(),
+        modified: None,
     })
+}
+
+pub fn backup_age(backup: &Backup) -> String {
+    let now = SystemTime::now();
+    if let Some(modified) = backup.modified {
+        let seconds = now
+            .duration_since(modified)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
+        return format_age(seconds.max(0));
+    }
+    backup_age_at(&backup.date, now)
+}
+
+pub fn backup_age_at(date: &str, now: SystemTime) -> String {
+    let Some(then) = parse_date_secs(date) else {
+        return "—".to_string();
+    };
+    let now = now
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    format_age((now - then).max(0))
+}
+
+fn format_age(seconds: i64) -> String {
+    if seconds < 60 {
+        "now".to_string()
+    } else if seconds < 3_600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h", seconds / 3_600)
+    } else if seconds < 14 * 86_400 {
+        format!("{}d", seconds / 86_400)
+    } else if seconds < 60 * 86_400 {
+        format!("{}w", seconds / (7 * 86_400))
+    } else if seconds < 365 * 86_400 {
+        format!("{}mo", seconds / (30 * 86_400))
+    } else {
+        format!("{}y", seconds / (365 * 86_400))
+    }
+}
+
+fn parse_date_secs(date: &str) -> Option<i64> {
+    let (day, time) = date.split_once(' ')?;
+    let mut day_parts = day.split('-');
+    let year: i64 = day_parts.next()?.parse().ok()?;
+    let month: u32 = day_parts.next()?.parse().ok()?;
+    let day: u32 = day_parts.next()?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+
+    let mut time_parts = time.split(':');
+    let hour: i64 = time_parts.next()?.parse().ok()?;
+    let minute: i64 = time_parts.next()?.parse().ok()?;
+    let second: i64 = time_parts.next().unwrap_or("0").parse().ok()?;
+    if hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+
+    Some(days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_prime = ((month + 9) % 12) as i64;
+    let day_of_year = (153 * month_prime + 2) / 5 + day as i64 - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 pub fn tail_log(lines: usize) -> Vec<String> {
@@ -369,6 +447,37 @@ mod tests {
         assert_eq!(backup.size, 3072);
         assert_eq!(backup.version, "1.3.9");
         assert_eq!(backup.compression, "GZ");
+    }
+
+    #[test]
+    fn age_uses_compact_units() {
+        use std::time::Duration;
+
+        let base = parse_date_secs("2026-01-01 12:00").unwrap();
+        let at = |seconds: u64| UNIX_EPOCH + Duration::from_secs(base as u64 + seconds);
+
+        assert_eq!(backup_age_at("2026-01-01 12:00", at(30)), "now");
+        assert_eq!(backup_age_at("2026-01-01 12:00", at(5 * 60)), "5m");
+        assert_eq!(backup_age_at("2026-01-01 12:00", at(3 * 3_600)), "3h");
+        assert_eq!(backup_age_at("2026-01-01 12:00", at(2 * 86_400)), "2d");
+        assert_eq!(backup_age_at("2026-01-01 12:00", at(21 * 86_400)), "3w");
+        assert_eq!(backup_age_at("—", at(0)), "—");
+    }
+
+    #[test]
+    fn backup_age_prefers_manifest_mtime() {
+        use std::time::Duration;
+
+        let mut backup = parse_manifest(&manifest()).unwrap();
+        backup.modified = Some(SystemTime::now() - Duration::from_secs(2 * 3_600));
+        assert_eq!(backup_age(&backup), "2h");
+    }
+
+    #[test]
+    fn date_parser_handles_epoch() {
+        assert_eq!(parse_date_secs("1970-01-01 00:00"), Some(0));
+        assert_eq!(parse_date_secs("1970-01-02 00:00"), Some(86_400));
+        assert_eq!(parse_date_secs("not a date"), None);
     }
 
     #[test]

@@ -9,14 +9,17 @@ It never reimplements backup logic. Read-only views come from
 
 ## What it shows
 
-- Header: storage and backup-count badges, and on wide terminals the local
-  path, compression, max-backup count and schedule.
+- Hero header: gradient `TERMUX SYNC` mark, tagline, storage and backup-count
+  chips, plus compression and max-backup settings on wide terminals.
+- Stat cards: backups saved, total stored size, latest package count and
+  schedule. Cards appear at 80+ columns and 20+ rows.
 - Actions pane: backup, restore, delete, list, logs, disk check, setup,
   schedule, clear cache, refresh, help, quit.
-- Backups pane: local backup name, label, date, size and package count, with
-  the selected backup's label, version and compression in the pane title.
-- Output pane: scrollable log tail and captured command output, with dates
-  dimmed and INFO / WARNING / ERROR levels color-coded.
+- Backups pane: short backup name, age, size, relative usage bar and package
+  count, with the selected backup's label, version and compression in the
+  pane title.
+- Output pane: scrollable log tail and captured command output, with dimmed
+  dates and INFO / WARNING / ERROR chips.
 
 ## Build and run
 
@@ -52,10 +55,11 @@ TERMUX_SYNC_BIN=/path/to/termux-sync ./target/release/termux-sync-tui
 
 ## Layout
 
-- `>= 80` columns: actions, backups and output side by side.
-- `48–79` columns: one pane at a time; `Tab` switches.
+- `>= 80` columns and 20+ rows: hero, stat cards, actions, backups and output.
+- `>= 80` columns below 20 rows: hero drops the stat cards.
+- `48–79` columns: hero plus one pane at a time; `Tab` switches.
 - `< 48×12`: "terminal too small" message naming the minimum.
-- `NO_COLOR=1`: same layout, focus markers and badges without color.
+- `NO_COLOR=1`: same layout, gradient, chips and focus markers without color.
 
 ## Safety notes
 
