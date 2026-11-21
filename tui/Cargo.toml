@@ -1,0 +1,16 @@
+[package]
+name = "termux-sync-tui"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Spike: Ratatui dashboard wrapper for the termux-sync CLI"
+license = "MIT"
+
+[dependencies]
+ratatui = "0.30"
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
