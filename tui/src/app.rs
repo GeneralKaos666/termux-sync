@@ -181,6 +181,7 @@ pub struct App {
     pub should_quit: bool,
     pub pending: Option<Vec<String>>,
     pub worker: Worker,
+    pub tick: u64,
 }
 
 impl App {
@@ -213,7 +214,20 @@ impl App {
             should_quit: false,
             pending: None,
             worker: Worker::default(),
+            tick: 0,
         }
+    }
+
+    pub fn on_tick(&mut self) {
+        self.tick = self.tick.wrapping_add(1);
+    }
+
+    pub fn spinner(&self) -> Option<&'static str> {
+        if !self.worker.is_busy() {
+            return None;
+        }
+        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        Some(FRAMES[(self.tick as usize / 2) % FRAMES.len()])
     }
 
     pub fn selected_backup(&self) -> Option<&Backup> {
@@ -430,6 +444,8 @@ mod tests {
                     label: String::new(),
                     packages: 2,
                     size: 1024,
+                    version: "1.3.9".to_string(),
+                    compression: "GZ".to_string(),
                 },
                 Backup {
                     name: "backup-two".to_string(),
@@ -437,6 +453,8 @@ mod tests {
                     label: "before-upgrade".to_string(),
                     packages: 3,
                     size: 2048,
+                    version: "1.3.9".to_string(),
+                    compression: "GZ".to_string(),
                 },
             ],
             log: vec!["ready".to_string()],
@@ -507,5 +525,14 @@ mod tests {
             app.selected_backup().map(|backup| backup.name.as_str()),
             Some("backup-two")
         );
+    }
+
+    #[test]
+    fn tick_advances_without_panicking() {
+        let mut app = App::with_snapshot(snapshot());
+        app.on_tick();
+        app.on_tick();
+        assert_eq!(app.tick, 2);
+        assert!(app.spinner().is_none());
     }
 }

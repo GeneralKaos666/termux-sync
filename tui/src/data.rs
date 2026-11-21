@@ -21,6 +21,27 @@ pub struct Backup {
     pub label: String,
     pub packages: usize,
     pub size: u64,
+    pub version: String,
+    pub compression: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogParts {
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
+}
+
+pub fn parse_log_line(line: &str) -> Option<LogParts> {
+    let rest = line.strip_prefix('[')?;
+    let (timestamp, rest) = rest.split_once(']')?;
+    let rest = rest.trim_start().strip_prefix('[')?;
+    let (level, message) = rest.split_once(']')?;
+    Some(LogParts {
+        timestamp: timestamp.to_string(),
+        level: level.to_string(),
+        message: message.trim_start().to_string(),
+    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -205,6 +226,8 @@ pub fn parse_manifest(value: &Value) -> Option<Backup> {
         label,
         packages,
         size,
+        version: string_field(value, "version", "—"),
+        compression: string_field(value, "compression", "—").to_uppercase(),
     })
 }
 
@@ -344,6 +367,19 @@ mod tests {
         assert_eq!(backup.label, "before-upgrade");
         assert_eq!(backup.packages, 3);
         assert_eq!(backup.size, 3072);
+        assert_eq!(backup.version, "1.3.9");
+        assert_eq!(backup.compression, "GZ");
+    }
+
+    #[test]
+    fn log_line_parser_splits_timestamp_level_and_message() {
+        let parts = parse_log_line("[2026-11-21 01:17:33] [INFO] Collected 1947 packages").unwrap();
+        assert_eq!(parts.timestamp, "2026-11-21 01:17:33");
+        assert_eq!(parts.level, "INFO");
+        assert_eq!(parts.message, "Collected 1947 packages");
+
+        assert!(parse_log_line("plain text").is_none());
+        assert!(parse_log_line("[2026-11-21 01:17:33] no level").is_none());
     }
 
     #[test]

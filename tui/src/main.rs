@@ -37,9 +37,10 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
     let mut app = App::new();
 
     loop {
+        app.on_tick();
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
-        if event::poll(Duration::from_millis(200))?
+        if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {

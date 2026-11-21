@@ -9,12 +9,14 @@ It never reimplements backup logic. Read-only views come from
 
 ## What it shows
 
-- Header: storage backend, backup count, and on wide terminals the local path,
-  compression, max-backup count and schedule.
+- Header: storage and backup-count badges, and on wide terminals the local
+  path, compression, max-backup count and schedule.
 - Actions pane: backup, restore, delete, list, logs, disk check, setup,
   schedule, clear cache, refresh, help, quit.
-- Backups pane: local backup name, label, date, size and package count.
-- Output pane: log tail and captured command output, scrollable.
+- Backups pane: local backup name, label, date, size and package count, with
+  the selected backup's label, version and compression in the pane title.
+- Output pane: scrollable log tail and captured command output, with dates
+  dimmed and INFO / WARNING / ERROR levels color-coded.
 
 ## Build and run
 
@@ -53,7 +55,7 @@ TERMUX_SYNC_BIN=/path/to/termux-sync ./target/release/termux-sync-tui
 - `>= 80` columns: actions, backups and output side by side.
 - `48–79` columns: one pane at a time; `Tab` switches.
 - `< 48×12`: "terminal too small" message naming the minimum.
-- `NO_COLOR=1`: same layout and focus markers without color.
+- `NO_COLOR=1`: same layout, focus markers and badges without color.
 
 ## Safety notes
 
