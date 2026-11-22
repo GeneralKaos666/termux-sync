@@ -2641,6 +2641,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--name",  "-n", default="")
     parser.add_argument("--lines", default=40, type=int)
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--json-events", action="store_true")
     parser.add_argument("--version", "-v", action="store_true")
     parser.add_argument("--help", "-h", action="store_true")
     return parser
@@ -2663,7 +2664,7 @@ def _abort():
 
 
 def main(argv=None):
-    global DEBUG
+    global DEBUG, EVENTS, console
     args = build_parser().parse_args(argv)
     DEBUG = DEBUG or args.debug
 
@@ -2675,8 +2676,16 @@ def main(argv=None):
         print_help()
         return
 
+    if args.json_events and args.command not in ("backup", "restore"):
+        print_error("Invalid usage", "--json-events is only supported for backup and restore.")
+        sys.exit(2)
+
     try:
         cfg = load_config()
+        if args.json_events:
+            old_console = console
+            console = Console(stderr=True)
+            enable_events(sys.stdout, secrets=_config_secrets(cfg))
         handlers = {
             "setup":         lambda: cmd_setup(),
             "backup":        lambda: cmd_backup(cfg, label=args.label),
@@ -2693,7 +2702,12 @@ def main(argv=None):
             "export-config": lambda: cmd_export_config(args.target or ""),
             "import-config": lambda: cmd_import_config(args.target or ""),
         }
-        handlers[args.command]()
+        try:
+            handlers[args.command]()
+        finally:
+            if args.json_events:
+                console = old_console
+                EVENTS = None
     except KeyboardInterrupt:
         _abort()
     except Exception as exc:

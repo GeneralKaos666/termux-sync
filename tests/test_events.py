@@ -1,6 +1,8 @@
 import io
 import json
 
+import pytest
+
 import termux_sync as ts
 
 
@@ -49,3 +51,31 @@ def test_confirm_reads_exact_restore_token():
 
 def test_config_secrets_skips_empty_values():
     assert ts._config_secrets({"github_token": "t", "encrypt_password": ""}) == ("t",)
+
+
+def test_parser_accepts_json_events():
+    args = ts.build_parser().parse_args(["backup", "--json-events"])
+    assert args.json_events is True
+
+
+def test_json_events_rejected_for_read_only_commands(capsys):
+    with pytest.raises(SystemExit) as info:
+        ts.main(["list", "--json-events"])
+    assert info.value.code == 2
+    assert "--json-events" in capsys.readouterr().out
+
+
+def test_json_events_keeps_stdout_clean(local_cfg, termux_tree, monkeypatch, capsys):
+    monkeypatch.setattr(ts, "load_config", lambda: local_cfg)
+    ts.main(["backup", "--json-events"])
+    out, err = capsys.readouterr()
+    for line in out.splitlines():
+        assert json.loads(line)["v"] == 1
+    assert "Backup" in err
+
+
+def test_json_events_restores_console_afterwards(local_cfg, termux_tree, monkeypatch):
+    before = ts.console
+    monkeypatch.setattr(ts, "load_config", lambda: local_cfg)
+    ts.main(["backup", "--json-events"])
+    assert ts.console is before
