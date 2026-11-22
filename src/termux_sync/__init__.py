@@ -17,6 +17,7 @@ import difflib
 import traceback
 import time
 import shutil
+import signal
 import hashlib
 import tarfile
 import argparse
@@ -1943,6 +1944,10 @@ def _cmd_restore_events(cfg: dict, backup_name: str):
             allowed_roots[item_key] = Path(item_root).resolve().parent
             expected_tops[item_key] = Path(item_root).resolve().name
 
+    # Once extraction starts, cancellation is unsafe. Ignore SIGINT until the
+    # protected phase finishes; the TUI also refuses to send it.
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     failed_archives = []
     for key, info in manifest.get("files", {}).items():
         stage_id = f"extract:{key}"
@@ -1989,6 +1994,8 @@ def _cmd_restore_events(cfg: dict, backup_name: str):
         event_stage("packages", "Packages", 6, total_stages, "complete")
     else:
         event_stage("packages", "Packages", 6, total_stages, "skipped")
+
+    signal.signal(signal.SIGINT, previous_sigint)
 
     event_stage("cleanup", "Cleanup", 7, total_stages, "start")
     _restore_cleanup(tmp_dir)
