@@ -1,0 +1,149 @@
+import io
+import json
+
+import pytest
+
+import termux_sync as ts
+
+
+@pytest.fixture
+def events(monkeypatch):
+    buffer = io.StringIO()
+    writer = ts.EventWriter(secrets=["secret-token", "secret-pass"])
+    writer.stream = buffer
+    monkeypatch.setattr(ts, "EVENTS", writer)
+    return buffer
+
+
+def parsed(buffer):
+    buffer.seek(0)
+    return [json.loads(line) for line in buffer.read().splitlines() if line]
+
+
+def make_backup(local_cfg):
+    ts.cmd_backup(local_cfg, label="events")
+    return ts.LocalStorage(local_cfg).list_backups()[0]
+
+
+def test_event_writer_redacts_secrets():
+    buffer = io.StringIO()
+    writer = ts.EventWriter(secrets=["secret-token"])
+    writer.stream = buffer
+    writer.emit("log", level="INFO", message="token=secret-token")
+    event = parsed(buffer)[0]
+    assert event["message"] == "token=***"
+
+
+def test_backup_emits_stages_and_verified_result(events, local_cfg, termux_tree):
+    make_backup(local_cfg)
+    events_list = parsed(events)
+    names = [event["event"] for event in events_list]
+
+    assert names[0] == "start"
+    assert "plan" not in names
+    stages = [event["id"] for event in events_list if event["event"] == "stage"]
+    assert stages[0] == "preflight"
+    assert "packages" in stages
+    assert "archive:home" in stages
+    assert "upload" in stages
+    assert "verify" in stages
+
+    verify = [event for event in events_list if event["event"] == "verify"][0]
+    assert verify["state"] == "verified"
+
+    result = [event for event in events_list if event["event"] == "result"][0]
+    assert result["ok"] is True
+    assert result["verified"] is True
+    assert result["name"].startswith("termux_backup_")
+    assert "secret-token" not in events.getvalue()
+
+
+def test_package_diff_chunks_at_500(events):
+    packages = [f"pkg-{index}" for index in range(1201)]
+    ts._emit_package_diff("to_install", packages)
+    events_list = parsed(events)
+    assert len(events_list) == 3
+    assert [event["part"] for event in events_list] == [1, 2, 3]
+    assert all(event["parts"] == 3 for event in events_list)
+    assert len(events_list[0]["packages"]) == 500
+    assert len(events_list[2]["packages"]) == 201
+
+
+def test_package_diff_unavailable_without_dpkg(monkeypatch):
+    def fail(*args, **kwargs):
+        raise FileNotFoundError("dpkg")
+
+    monkeypatch.setattr(ts.subprocess, "run", fail)
+    available, to_install, already, device_only = ts._restore_package_diff(["git"])
+    assert available is False
+    assert to_install == []
+    assert already == []
+    assert device_only == []
+
+
+def test_restore_plan_diff_confirm_and_result(events, local_cfg, termux_tree, monkeypatch):
+    manifest = make_backup(local_cfg)
+    events.seek(0)
+    events.truncate(0)
+
+    monkeypatch.setattr(ts, "install_packages", lambda packages, console: [])
+    monkeypatch.setattr(ts.sys, "stdin", io.StringIO('{"confirm":"RESTORE"}\n'))
+
+    ts.cmd_restore(local_cfg, backup_name=manifest["name"])
+    events_list = parsed(events)
+    names = [event["event"] for event in events_list]
+
+    plan = [event for event in events_list if event["event"] == "plan"][0]
+    assert plan["name"] == manifest["name"]
+    assert plan["diff_available"] is True
+    assert plan["packages"] == 2
+    assert plan["checksums"] == "pending"
+
+    categories = {
+        event["category"]
+        for event in events_list
+        if event["event"] == "package_diff"
+    }
+    assert categories == {"to_install", "already_installed", "device_only"}
+
+    verify = [event for event in events_list if event["event"] == "verify"][0]
+    assert verify["state"] == "verified"
+    assert "extract:home" in [event.get("id") for event in events_list if event["event"] == "stage"]
+
+    result = [event for event in events_list if event["event"] == "result"][0]
+    assert result["ok"] is True
+    assert result["warnings"] is False
+    assert result["restart_required"] is True
+    assert names.index("plan") < names.index("verify")
+
+
+def test_restore_decline_emits_cancelled(events, local_cfg, termux_tree, monkeypatch):
+    manifest = make_backup(local_cfg)
+    events.seek(0)
+    events.truncate(0)
+    monkeypatch.setattr(ts.sys, "stdin", io.StringIO('{"confirm":"CANCEL"}\n'))
+
+    ts.cmd_restore(local_cfg, backup_name=manifest["name"])
+    events_list = parsed(events)
+    names = [event["event"] for event in events_list]
+    assert "cancelled" in names
+    assert "verify" not in names
+    assert all(event.get("id") != "extract:home" for event in events_list)
+
+
+def test_restore_checksum_failure_never_extracts(events, local_cfg, termux_tree, monkeypatch):
+    manifest = make_backup(local_cfg)
+    events.seek(0)
+    events.truncate(0)
+    stored = ts.Path(local_cfg["local_path"]) / manifest["name"] / manifest["files"]["home"]["archive"]
+    stored.write_bytes(b"corrupted")
+
+    monkeypatch.setattr(ts, "install_packages", lambda packages, console: [])
+    monkeypatch.setattr(ts.sys, "stdin", io.StringIO('{"confirm":"RESTORE"}\n'))
+
+    ts.cmd_restore(local_cfg, backup_name=manifest["name"])
+    events_list = parsed(events)
+    assert any(event["event"] == "error" for event in events_list)
+    assert all(event.get("id") != "extract:home" for event in events_list)
+    verify = [event for event in events_list if event["event"] == "verify"][0]
+    assert verify["state"] == "failed"

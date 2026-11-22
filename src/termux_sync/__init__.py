@@ -108,6 +108,7 @@ def log(level: str, message: str):
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(LOG_FILE, "a") as f:
         f.write(f"[{ts}] [{level.upper()}] {message}\n")
+    emit_event("log", level=level.upper(), message=message)
 
 
 DEFAULT_CONFIG = {
@@ -165,6 +166,97 @@ console = Console()
 
 DEBUG      = bool(os.environ.get("TERMUX_SYNC_DEBUG"))
 ISSUES_URL = "https://github.com/djunekz/termux-sync/issues"
+
+
+class EventWriter:
+    """Line-delimited JSON events for the Rust TUI. Never writes to the Rich console."""
+
+    def __init__(self, secrets=None):
+        self.secrets = [str(s) for s in (secrets or []) if s]
+        self.stream = sys.stdout
+
+    def _redact_text(self, text: str) -> str:
+        for secret in self.secrets:
+            text = text.replace(secret, "***")
+        return text
+
+    def _redact(self, value):
+        if isinstance(value, str):
+            return self._redact_text(value)
+        if isinstance(value, list):
+            return [self._redact(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self._redact(item) for key, item in value.items()}
+        return value
+
+    def emit(self, event: str, **fields):
+        payload = {"v": 1, "event": event, "ts": int(time.time() * 1000)}
+        payload.update(fields)
+        try:
+            line = json.dumps(self._redact(payload), ensure_ascii=False, default=str,
+                              separators=(",", ":"))
+            self.stream.write(line + "\n")
+            self.stream.flush()
+        except Exception:
+            # Event reporting must never take down the backup itself.
+            pass
+
+
+EVENTS = None
+
+
+def emit_event(event: str, **fields):
+    if EVENTS is not None:
+        EVENTS.emit(event, **fields)
+
+
+def event_stage(stage_id: str, label: str, index: int, total: int, state: str):
+    emit_event("stage", id=stage_id, label=label, state=state, index=index, total=total)
+
+
+class EventProgress:
+    """Throttle high-frequency progress callbacks into event lines."""
+
+    def __init__(self, stage: str, interval: float = 0.5):
+        self.stage = stage
+        self.interval = interval
+        self.last = 0.0
+
+    def emit(self, current, total=None, unit="bytes", detail=None, force=False):
+        if EVENTS is None:
+            return
+        now = time.monotonic()
+        if not force and now - self.last < self.interval:
+            return
+        self.last = now
+        fields = {"stage": self.stage, "current": int(current), "unit": unit}
+        if total is not None:
+            fields["total"] = int(total)
+        if detail:
+            fields["detail"] = str(detail)
+        emit_event("progress", **fields)
+
+
+def event_confirmation() -> bool:
+    """Read one JSON confirmation line from stdin for restore."""
+    line = sys.stdin.readline()
+    if not line:
+        return False
+    try:
+        message = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return isinstance(message, dict) and message.get("confirm") == "RESTORE"
+
+
+
+def enable_event_mode(cfg: dict):
+    global EVENTS, console
+    secrets = [cfg.get("github_token", ""), cfg.get("encrypt_password", "")]
+    EVENTS = EventWriter(secrets=secrets)
+    # Human output and Rich progress move to stderr; stdout belongs to events.
+    console = Console(stderr=True)
+
 
 
 # ───────────────────────── Error handling ─────────────────────────
@@ -271,6 +363,7 @@ def handle_crash(exc: Exception):
     title, message, hint = _explain(exc)
     expected = isinstance(getattr(exc, "original", exc), UserError)
     print_error(title, message, hint, where="" if expected and not DEBUG else _origin(exc))
+    emit_event("error", message=message, hint=hint, exit_code=1)
 
     if DEBUG:
         console.print("[bold dim]Full traceback (--debug)[/bold dim]")
@@ -451,6 +544,8 @@ def install_packages(pkg_list: list[str], console: Console) -> list[str]:
     with make_progress(transient=True, percent=True) as progress:
         task = progress.add_task("[cyan]Installing…", total=total)
         for i, pkg in enumerate(pkg_list, 1):
+            emit_event("progress", stage="packages", current=i, total=total,
+                       unit="packages", detail=str(pkg))
             progress.update(task, description=f"[cyan]{i}/{total}  {escape(pkg)}")
             if not _PKG_NAME_RE.fullmatch(str(pkg)):
                 log("WARNING", f"Skipped invalid package name in manifest: {pkg!r}")
@@ -489,6 +584,7 @@ def create_archive(
     label: str,
     progress: Progress,
     sink=None,
+    on_member=None,
 ) -> Path:
     """Create a tar archive. With `sink` (a file-like object) the archive is streamed
     into it and nothing is written to `archive_path`."""
@@ -515,6 +611,8 @@ def create_archive(
     wrapped_excludes = [w for w in (_exclude_prefix(p) for p in excludes) if w]
 
     def _filter(tarinfo):
+        if on_member is not None:
+            on_member(tarinfo)
         wrapped_name = "/" + tarinfo.name.strip("/") + "/"
         for pat in wrapped_excludes:
             if pat in wrapped_name:
@@ -630,6 +728,7 @@ def extract_archive(
     label: str,
     progress: Progress,
     expected_top: str | None = None,
+    on_member=None,
 ):
     task = progress.add_task(f"[cyan]{label}", total=None)
     dest_path.mkdir(parents=True, exist_ok=True)
@@ -638,6 +737,8 @@ def extract_archive(
 
     with tarfile.open(archive_path, "r:*") as tf:
         for member in tf.getmembers():
+            if on_member is not None:
+                on_member(member)
             try:
                 _safe_extract_member(member, dest_path)
                 _check_member_root(member, dest_path, expected_top)
@@ -686,8 +787,15 @@ class LocalStorage:
         dest = self.root / backup_name
         task = progress.add_task("[cyan]Saving to local storage…", total=None)
         dest.mkdir(parents=True, exist_ok=True)
-        for f in backup_dir.iterdir():
+        files = [f for f in backup_dir.iterdir() if f.is_file()]
+        total = sum(f.stat().st_size for f in files)
+        done = 0
+        for f in files:
             shutil.copy2(f, dest / f.name)
+            done += f.stat().st_size
+            if EVENTS is not None:
+                emit_event("progress", stage="upload", current=done, total=total,
+                           unit="bytes", detail=f.name)
         progress.update(task, total=1, completed=1, description="[green]Saved locally ✓")
         return str(dest)
 
@@ -713,8 +821,15 @@ class LocalStorage:
             raise FileNotFoundError(f"Backup not found: {src}")
         task = progress.add_task("[cyan]Loading from local storage…", total=None)
         dest.mkdir(parents=True, exist_ok=True)
-        for f in src.iterdir():
+        files = [f for f in src.iterdir() if f.is_file()]
+        total = sum(f.stat().st_size for f in files)
+        done = 0
+        for f in files:
             shutil.copy2(f, dest / f.name)
+            done += f.stat().st_size
+            if EVENTS is not None:
+                emit_event("progress", stage="download", current=done, total=total,
+                           unit="bytes", detail=f.name)
         progress.update(task, total=1, completed=1, description="[green]Loaded ✓")
 
     def delete_old(self, max_keep: int):
@@ -1391,6 +1506,7 @@ def _storage_excludes(cfg: dict, src: Path) -> list[str]:
 
 
 def cmd_backup(cfg: dict, label: str = ""):
+    t0 = time.monotonic()
     print_section("BACKUP", "Creating a full snapshot of your Termux environment")
 
     timestamp   = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1398,6 +1514,10 @@ def cmd_backup(cfg: dict, label: str = ""):
     clean_label = _clean_label(label) if label else ""
     if clean_label:
         backup_name += f"_{clean_label}"
+
+    total_stages = 7
+    emit_event("start", command="backup", name=backup_name,
+               storage=cfg.get("storage", "local"), version=VERSION)
 
     tmp_dir = _tmp_root() / backup_name
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -1419,14 +1539,17 @@ def cmd_backup(cfg: dict, label: str = ""):
     storage  = get_storage(cfg)
 
     check_storage = getattr(storage, "preflight", None)
+    event_stage("preflight", "Preflight", 1, total_stages, "start")
     if check_storage:
         console.print("  [bold]Check[/bold]   Verifying GitHub repository…")
         try:
             check_storage()
         except BaseException:
+            event_stage("preflight", "Preflight", 1, total_stages, "failed")
             _cleanup_tmp()
             raise
         console.print(f"  {status_icon(True)} Repository is ready\n")
+    event_stage("preflight", "Preflight", 1, total_stages, "complete")
 
     streaming = hasattr(storage, "begin_stream")
     if streaming:
@@ -1454,12 +1577,16 @@ def cmd_backup(cfg: dict, label: str = ""):
     }
 
     console.print("  [bold]Step 1/4[/bold]  Collecting installed packages…")
+    event_stage("packages", "Packages", 2, total_stages, "start")
     pkgs = get_installed_packages()
     meta["packages"] = pkgs
     pkg_file = tmp_dir / "packages.txt"
     pkg_file.write_text("\n".join(pkgs))
     console.print(f"  {status_icon(True)} Found [bold green]{len(pkgs)}[/bold green] installed packages")
     log("INFO", f"Collected {len(pkgs)} packages")
+    emit_event("progress", stage="packages", current=len(pkgs), total=len(pkgs),
+               unit="packages")
+    event_stage("packages", "Packages", 2, total_stages, "complete")
 
     console.print()
     console.print("  [bold]Step 2/4[/bold]  " +
@@ -1472,15 +1599,27 @@ def cmd_backup(cfg: dict, label: str = ""):
             ("usr_etc", "Termux config (/usr/etc)", TERMUX_HOME / "etc"),
         ]
         for key, label_text, src in archive_items:
+            stage_index = 3 if key == "home" else 4
+            stage_id = f"archive:{key}"
+            event_stage(stage_id, label_text, stage_index, total_stages, "start")
             if not src.exists():
                 console.print(f"  [yellow]⚠ Skipping {src} (not found)[/yellow]")
+                event_stage(stage_id, label_text, stage_index, total_stages, "skipped")
                 continue
             out_path = tmp_dir / f"{key}.tar.{compression}"
             sink = storage.stream_sink(out_path.name, progress) if streaming else None
             item_excludes = list(excludes) + _storage_excludes(cfg, src) + _self_excludes(src)
+            seen = [0]
+            throttle = EventProgress(stage_id)
+
+            def on_member(info, seen=seen, throttle=throttle):
+                if info.isfile():
+                    seen[0] += info.size
+                throttle.emit(seen[0], unit="bytes", detail=info.name)
+
             try:
                 actual_out = create_archive(src, out_path, compression, item_excludes, label_text,
-                                            progress, sink=sink)
+                                            progress, sink=sink, on_member=on_member)
                 if sink is not None:
                     sink.finish()
                     archive_size, checksum = sink.total, sink.sha.hexdigest()
@@ -1493,10 +1632,14 @@ def cmd_backup(cfg: dict, label: str = ""):
                     "checksum": checksum,
                     "source":   str(src),
                 }
+                event_stage(stage_id, label_text, stage_index, total_stages, "complete")
+                emit_event("progress", stage=stage_id, current=archive_size,
+                           total=archive_size, unit="bytes")
                 log("INFO", f"Archived {src} → {actual_out.name} ({human_size(archive_size)})")
             except (StreamAbort, KeyboardInterrupt):
                 if sink is not None:
                     sink.abort()
+                event_stage(stage_id, label_text, stage_index, total_stages, "failed")
                 for t in list(progress.tasks):
                     progress.remove_task(t.id)
                 _abort_backup()
@@ -1504,6 +1647,7 @@ def cmd_backup(cfg: dict, label: str = ""):
             except OSError as e:
                 if sink is not None:
                     sink.abort()
+                event_stage(stage_id, label_text, stage_index, total_stages, "failed")
                 if e.errno == errno.ENOSPC:             # out of space: stop, don't continue silently
                     for t in list(progress.tasks):
                         progress.remove_task(t.id)
@@ -1514,13 +1658,16 @@ def cmd_backup(cfg: dict, label: str = ""):
             except Exception as e:
                 if sink is not None:
                     sink.abort()
+                event_stage(stage_id, label_text, stage_index, total_stages, "failed")
                 console.print(f"  [red]✗ Failed to archive {src}: {escape(str(e))}[/red]")
                 log("ERROR", f"Archive failed for {src}: {e}")
 
     console.print()
     console.print("  [bold]Step 3/4[/bold]  Writing manifest…")
+    event_stage("manifest", "Manifest", 5, total_stages, "start")
     write_manifest(tmp_dir, meta)
     console.print(f"  {status_icon(True)} Manifest written")
+    event_stage("manifest", "Manifest", 5, total_stages, "complete")
 
     console.print()
     console.print(f"  [bold]Step 4/4[/bold]  Uploading to [bold cyan]{cfg['storage'].upper()}[/bold cyan]…")
@@ -1528,11 +1675,13 @@ def cmd_backup(cfg: dict, label: str = ""):
 
     location = ""
     upload_error = None
+    event_stage("upload", "Upload", 6, total_stages, "start")
     with make_progress() as progress:
         try:
             location = storage.upload(tmp_dir, backup_name, progress)
             storage.delete_old(cfg.get("max_backups", 5))
         except KeyboardInterrupt:
+            event_stage("upload", "Upload", 6, total_stages, "failed")
             _abort_backup()
             raise
         except Exception as e:
@@ -1541,9 +1690,11 @@ def cmd_backup(cfg: dict, label: str = ""):
                 progress.remove_task(t.id)
 
     if upload_error is not None:
+        event_stage("upload", "Upload", 6, total_stages, "failed")
         log("ERROR", f"Upload failed: {upload_error}")
         title, message, hint = _explain(upload_error)
         print_error(f"Upload failed — {title}", message, hint)
+        emit_event("error", message=f"Upload failed — {title}", hint=hint, exit_code=1)
         if streaming:
             _abort_backup()        # remove the incomplete release so it never counts as a backup
             console.print("  [dim]The incomplete backup was removed from GitHub.[/dim]\n")
@@ -1553,6 +1704,31 @@ def cmd_backup(cfg: dict, label: str = ""):
             console.print("  [dim]Delete them when you no longer need them:[/dim]")
             console.print(f"  rm -rf {escape(str(tmp_dir))}\n", soft_wrap=True)
         return
+
+    event_stage("upload", "Upload", 6, total_stages, "complete")
+
+    event_stage("verify", "Verify", 7, total_stages, "start")
+    verified = None
+    verify_details = "verification unavailable for this backend"
+    if streaming:
+        verified = True
+        verify_details = "stream digest"
+    elif cfg.get("storage") == "local" and location:
+        verified = True
+        root = Path(location)
+        for key, info in meta.get("files", {}).items():
+            stored = root / info.get("archive", "")
+            if not stored.is_file() or sha256(stored) != info.get("checksum"):
+                verified = False
+                verify_details = f"checksum failed for {info.get('archive', key)}"
+                break
+        if verified:
+            verify_details = "local checksums match"
+    emit_event("verify",
+               state="verified" if verified else ("skipped" if verified is None else "failed"),
+               details=verify_details)
+    event_stage("verify", "Verify", 7, total_stages,
+                "complete" if verified is not False else "failed")
 
     shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -1572,9 +1748,265 @@ def cmd_backup(cfg: dict, label: str = ""):
         padding=(0, 2),
     ))
     log("INFO", f"Backup completed: {backup_name} ({human_size(total_size)})")
+    emit_event("result", ok=True, name=backup_name, size=total_size,
+               location=location, verified=verified,
+               verify_details=verify_details,
+               duration_ms=int((time.monotonic() - t0) * 1000))
+
+
+def _restore_cleanup(tmp_dir: Path):
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _restore_package_diff(backup_packages: list[str]):
+    """Return (available, to_install, already_installed, device_only)."""
+    try:
+        result = subprocess.run(
+            ["dpkg", "--get-selections"],
+            capture_output=True, text=True, check=True,
+        )
+        current = {
+            line.split()[0]
+            for line in result.stdout.splitlines()
+            if len(line.split()) >= 2 and line.split()[1] == "install"
+        }
+    except Exception:
+        return False, [], [], []
+
+    backup = set(map(str, backup_packages))
+    return (
+        True,
+        sorted(backup - current),
+        sorted(backup & current),
+        sorted(current - backup),
+    )
+
+
+def _emit_package_diff(category: str, packages: list[str]):
+    chunk = 500
+    if not packages:
+        emit_event("package_diff", category=category, part=1, parts=1, packages=[])
+        return
+    parts = max(1, (len(packages) + chunk - 1) // chunk)
+    for part, start in enumerate(range(0, len(packages), chunk), 1):
+        emit_event("package_diff", category=category, part=part, parts=parts,
+                   packages=packages[start:start + chunk])
+
+
+def _cmd_restore_events(cfg: dict, backup_name: str):
+    """JSON-event restore path. The Rich CLI path below remains unchanged."""
+    t0 = time.monotonic()
+    total_stages = 7
+
+    name = _clean_backup_name(backup_name)
+    if not name:
+        emit_event("error", message="Invalid backup name", hint="Pass --name <backup>",
+                   exit_code=2)
+        return
+
+    storage = get_storage(cfg)
+    tmp_dir = _tmp_root() / f"restore_{name}"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    emit_event("start", command="restore", name=name,
+               storage=cfg.get("storage", "local"), version=VERSION)
+
+    event_stage("metadata", "Metadata", 1, total_stages, "start")
+    manifest = None
+    remote_downloaded = False
+
+    try:
+        if cfg.get("storage") == "local":
+            root = Path(cfg["local_path"]).expanduser()
+            manifest = read_manifest(root / name)
+        else:
+            # Backends without a manifest-only fetch use the existing download path.
+            console.print("  [bold]Fetching backup metadata…[/bold]")
+            event_stage("download", "Download", 2, total_stages, "start")
+            with make_progress(transient=True, percent=True) as progress:
+                storage.download(name, tmp_dir, progress)
+            remote_downloaded = True
+            event_stage("download", "Download", 2, total_stages, "complete")
+            manifest = read_manifest(tmp_dir)
+    except KeyboardInterrupt:
+        _restore_cleanup(tmp_dir)
+        raise
+    except Exception as e:
+        _restore_cleanup(tmp_dir)
+        event_stage("metadata", "Metadata", 1, total_stages, "failed")
+        emit_event("error", message=f"Could not prepare restore: {e}",
+                   hint="Check the backup and storage connection.", exit_code=1)
+        return
+
+    if not manifest:
+        _restore_cleanup(tmp_dir)
+        event_stage("metadata", "Metadata", 1, total_stages, "failed")
+        emit_event("error", message="Could not read manifest",
+                   hint="The backup may be corrupted or incomplete.", exit_code=1)
+        return
+
+    event_stage("metadata", "Metadata", 1, total_stages, "complete")
+
+    backup_packages = [str(p) for p in manifest.get("packages", [])]
+    diff_ok, to_install, already_installed, device_only = _restore_package_diff(
+        backup_packages)
+    archives = [str(info.get("archive", ""))
+                for info in manifest.get("files", {}).values()
+                if info.get("archive")]
+    size = sum(int(info.get("size", 0))
+               for info in manifest.get("files", {}).values())
+
+    plan = {
+        "name": name,
+        "date": str(manifest.get("date", "")),
+        "label": str(manifest.get("label", "") or ""),
+        "storage": cfg.get("storage", "local"),
+        "versions": {"backup": str(manifest.get("version", "—")), "current": VERSION},
+        "packages": len(backup_packages),
+        "diff_available": diff_ok,
+        "archives": archives,
+        "size": size,
+        "checksums": "pending",
+    }
+    if diff_ok:
+        plan.update({
+            "to_install": len(to_install),
+            "already_installed": len(already_installed),
+            "device_only": len(device_only),
+        })
+    emit_event("plan", **plan)
+
+    if diff_ok:
+        _emit_package_diff("to_install", to_install)
+        _emit_package_diff("already_installed", already_installed)
+        _emit_package_diff("device_only", device_only)
+
+    if not event_confirmation():
+        _restore_cleanup(tmp_dir)
+        emit_event("cancelled", reason="declined")
+        return
+
+    if not remote_downloaded:
+        event_stage("download", "Download", 2, total_stages, "start")
+        try:
+            with make_progress(transient=True, percent=True) as progress:
+                storage.download(name, tmp_dir, progress)
+        except KeyboardInterrupt:
+            _restore_cleanup(tmp_dir)
+            raise
+        except Exception as e:
+            _restore_cleanup(tmp_dir)
+            event_stage("download", "Download", 2, total_stages, "failed")
+            emit_event("error", message=f"Download failed: {e}",
+                       hint="Check storage access and try again.", exit_code=1)
+            return
+        event_stage("download", "Download", 2, total_stages, "complete")
+    else:
+        event_stage("download", "Download", 2, total_stages, "skipped")
+
+    event_stage("verify", "Verify", 3, total_stages, "start")
+    all_ok = True
+    for index, (key, info) in enumerate(manifest.get("files", {}).items(), 1):
+        if _clean_backup_name(info.get("archive", "")) != info.get("archive"):
+            all_ok = False
+            emit_event("log", level="WARNING",
+                       message=f"Unsafe archive name in manifest for {key!r}")
+            continue
+        archive = tmp_dir / info["archive"]
+        if not archive.exists() or sha256(archive) != info.get("checksum"):
+            all_ok = False
+            emit_event("log", level="ERROR",
+                       message=f"Checksum failed: {info.get('archive', key)}")
+        emit_event("progress", stage="verify", current=index,
+                   total=len(manifest.get("files", {})), unit="items",
+                   detail=info.get("archive", key))
+
+    if not all_ok:
+        _restore_cleanup(tmp_dir)
+        emit_event("verify", state="failed", details="checksum verification failed")
+        event_stage("verify", "Verify", 3, total_stages, "failed")
+        emit_event("error", message="Checksum verification failed",
+                   hint="Restore was stopped before extraction. The backup may be corrupt.",
+                   exit_code=1)
+        return
+    emit_event("verify", state="verified", details="all archive checksums match")
+    event_stage("verify", "Verify", 3, total_stages, "complete")
+
+    allowed_roots = {}
+    expected_tops = {}
+    for item_key, _label, item_root in BACKUP_ITEMS:
+        if item_root is not None:
+            allowed_roots[item_key] = Path(item_root).resolve().parent
+            expected_tops[item_key] = Path(item_root).resolve().name
+
+    failed_archives = []
+    for key, info in manifest.get("files", {}).items():
+        stage_id = f"extract:{key}"
+        stage_label = "Home" if key == "home" else ("Config" if key == "usr_etc" else key)
+        stage_index = 4 if key == "home" else (5 if key == "usr_etc" else 4)
+        event_stage(stage_id, stage_label, stage_index, total_stages, "start")
+
+        if _clean_backup_name(info.get("archive", "")) != info.get("archive"):
+            failed_archives.append(info.get("archive", key))
+            event_stage(stage_id, stage_label, stage_index, total_stages, "failed")
+            continue
+        src_dir = allowed_roots.get(key)
+        if src_dir is None:
+            failed_archives.append(info.get("archive", key))
+            emit_event("log", level="WARNING",
+                       message=f"Refused restore for unknown manifest key: {key!r}")
+            event_stage(stage_id, stage_label, stage_index, total_stages, "failed")
+            continue
+
+        throttle = EventProgress(stage_id)
+        member_count = [0]
+
+        def on_member(member, throttle=throttle, member_count=member_count):
+            member_count[0] += 1
+            throttle.emit(member_count[0], unit="items", detail=member.name)
+
+        try:
+            with make_progress() as progress:
+                extract_archive(
+                    tmp_dir / info["archive"], src_dir, info["archive"], progress,
+                    expected_top=expected_tops.get(key), on_member=on_member,
+                )
+            event_stage(stage_id, stage_label, stage_index, total_stages, "complete")
+        except Exception as e:
+            failed_archives.append(info["archive"])
+            emit_event("log", level="ERROR",
+                       message=f"Extract failed for {info['archive']}: {e}")
+            event_stage(stage_id, stage_label, stage_index, total_stages, "failed")
+
+    package_failures = []
+    if backup_packages:
+        event_stage("packages", "Packages", 6, total_stages, "start")
+        package_failures = install_packages(backup_packages, console)
+        event_stage("packages", "Packages", 6, total_stages, "complete")
+    else:
+        event_stage("packages", "Packages", 6, total_stages, "skipped")
+
+    event_stage("cleanup", "Cleanup", 7, total_stages, "start")
+    _restore_cleanup(tmp_dir)
+    event_stage("cleanup", "Cleanup", 7, total_stages, "complete")
+
+    emit_event(
+        "result", ok=True, name=name, size=size,
+        packages=len(backup_packages),
+        packages_installed=len(backup_packages) - len(package_failures),
+        packages_failed=package_failures,
+        archives=len(archives),
+        archives_failed=failed_archives,
+        warnings=bool(package_failures or failed_archives),
+        restart_required=True,
+        duration_ms=int((time.monotonic() - t0) * 1000),
+    )
 
 
 def cmd_restore(cfg: dict, backup_name: str = ""):
+    if EVENTS is not None:
+        return _cmd_restore_events(cfg, backup_name)
+
     print_section("RESTORE", "Restoring your Termux environment from a backup")
 
     storage = get_storage(cfg)
@@ -2492,6 +2924,7 @@ OPTIONS = [
     ("-l, --label LABEL", "Label for this backup"),
     ("-n, --name NAME",   "Backup name to restore / delete"),
     ("--lines N",         "Lines to show in logs (default 40)"),
+    ("--json-events",     "Emit JSON progress events (used by the TUI)"),
     ("--debug",           "Show the full traceback if something fails"),
     ("-v, --version",     "Print version and exit"),
     ("-h, --help",        "Show this help"),
@@ -2576,6 +3009,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--label", "-l", default="")
     parser.add_argument("--name",  "-n", default="")
     parser.add_argument("--lines", default=40, type=int)
+    parser.add_argument("--json-events", action="store_true")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--version", "-v", action="store_true")
     parser.add_argument("--help", "-h", action="store_true")
@@ -2583,6 +3017,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _abort():
+    emit_event("cancelled", reason="user")
     console.print()
     console.print(
         Panel(
@@ -2613,6 +3048,8 @@ def main(argv=None):
 
     try:
         cfg = load_config()
+        if getattr(args, "json_events", False):
+            enable_event_mode(cfg)
         handlers = {
             "setup":         lambda: cmd_setup(),
             "backup":        lambda: cmd_backup(cfg, label=args.label),
