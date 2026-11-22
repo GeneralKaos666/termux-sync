@@ -76,7 +76,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if app.show_help {
-        render_help(frame, area);
+        render_help(frame, area, app);
+    }
+
+    if app.pending.is_some() {
+        render_launch(frame, area, app);
     }
 }
 
@@ -181,6 +185,24 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
         render_backups(frame, backups, app);
         render_output(frame, output, app);
     } else {
+        let progress = ease_out(app.pane_progress());
+        let area = if progress < 1.0 {
+            frame.render_widget(Clear, area);
+            let width = (area.width as f32 * (0.55 + 0.45 * progress))
+                .round()
+                .clamp(1.0, area.width as f32) as u16;
+            if app.pane_dir >= 0 {
+                Rect {
+                    x: area.x + area.width - width,
+                    width,
+                    ..area
+                }
+            } else {
+                Rect { width, ..area }
+            }
+        } else {
+            area
+        };
         match app.focus {
             Focus::Actions => render_actions(frame, area, app),
             Focus::Backups => render_backups(frame, area, app),
@@ -190,10 +212,16 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn render_actions(frame: &mut Frame, area: Rect, app: &mut App) {
-    let width = area.width.saturating_sub(4) as usize;
+    let inner = area.width.saturating_sub(4) as usize;
+    let label_width = inner.saturating_sub(2);
     let items: Vec<ListItem> = ACTIONS
         .iter()
-        .map(|item| ListItem::new(format!("{:<width$}", item.label, width = width)))
+        .map(|item| {
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{} ", item.glyph), fg(ACCENT).bold()),
+                Span::raw(format!("{:<width$}", item.label, width = label_width)),
+            ]))
+        })
         .collect();
     let list = List::new(items)
         .block(pane_block(
@@ -458,8 +486,13 @@ fn render_too_small(frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, middle);
 }
 
-fn render_help(frame: &mut Frame, area: Rect) {
-    let popup = centered(area, 64, 24);
+fn render_help(frame: &mut Frame, area: Rect, app: &App) {
+    let progress = ease_out(app.help_progress());
+    let max_width = area.width.saturating_sub(2).max(20) as f32;
+    let max_height = area.height.saturating_sub(2).max(7) as f32;
+    let width = (28.0 + 36.0 * progress).min(max_width) as u16;
+    let height = (8.0 + 16.0 * progress).min(max_height) as u16;
+    let popup = centered(area, width, height);
     let mut lines = vec![Line::from(vec![
         Span::styled("◆ ", fg(ACCENT).bold()),
         Span::styled("HELP", fg(ACCENT).bold()),
@@ -500,6 +533,42 @@ fn render_help(frame: &mut Frame, area: Rect) {
         Paragraph::new(Text::from(lines)).block(pane_block("Help", None, true, ACCENT)),
         popup,
     );
+}
+
+fn render_launch(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(argv) = app.pending.as_ref() else {
+        return;
+    };
+    let progress = ease_out(app.launch_progress());
+    let width = (30.0 + 30.0 * progress).round() as u16;
+    let height = (5.0 + 2.0 * progress).round() as u16;
+    let popup = centered(area, width, height);
+    let spinner = app.spinner().unwrap_or("◐");
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("◆ ", fg(ACCENT).bold()),
+            Span::styled("LAUNCHING", fg(ACCENT).bold()),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("{spinner} "), fg(ACCENT).bold()),
+            Span::styled(
+                format!("termux-sync {}", argv.join(" ")),
+                fg(SUCCESS).bold(),
+            ),
+        ]),
+        Line::from(Span::styled("Handing the terminal over…", fg(MUTED))),
+    ];
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).block(pane_block("Launch", None, true, ACCENT)),
+        popup,
+    );
+}
+
+fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t).powi(3)
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -687,8 +756,11 @@ mod tests {
         assert!(frame.contains("LOCAL"));
         assert!(frame.contains("Actions"));
         assert!(frame.contains("Output"));
+        assert!(frame.contains("20260101_120000"));
         assert!(frame.contains("v1.3.9 GZ"));
         assert!(frame.contains("╭"));
+        assert!(frame.contains("↑"));
+        assert!(frame.contains("☰"));
     }
 
     #[test]
@@ -719,7 +791,10 @@ mod tests {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let mut app = app();
-        app.show_help = true;
+        app.open_help();
+        for _ in 0..5 {
+            app.on_tick();
+        }
         terminal
             .draw(|frame| draw(frame, &mut app))
             .expect("draw succeeds");
@@ -732,6 +807,27 @@ mod tests {
             .collect();
         assert!(content.contains("HELP"));
         assert!(content.contains("switch pane"));
+    }
+
+    #[test]
+    fn launch_overlay_animates_before_handoff() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = app();
+        app.run(crate::app::Action::Backup);
+        app.on_tick();
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("draw succeeds");
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("LAUNCHING"));
+        assert!(content.contains("termux-sync backup"));
     }
 
     #[test]

@@ -13,13 +13,16 @@ It never reimplements backup logic. Read-only views come from
   chips, plus compression and max-backup settings on wide terminals.
 - Stat cards: backups saved, total stored size, latest package count and
   schedule. Cards appear at 80+ columns and 20+ rows.
-- Actions pane: backup, restore, delete, list, logs, disk check, setup,
-  schedule, clear cache, refresh, help, quit.
+- Actions pane: icon for every action, plus backup, restore, delete, list,
+  logs, disk check, setup, schedule, clear cache, refresh, help, quit.
 - Backups pane: short backup name, age, size, relative usage bar and package
   count, with the selected backup's label, version and compression in the
   pane title.
 - Output pane: scrollable log tail and captured command output, with dimmed
   dates and INFO / WARNING / ERROR chips.
+- Motion: help expands from a small card, narrow layouts reveal the incoming
+  pane, and handoff commands show a spinner card before the terminal changes
+  hands.
 
 ## Build and run
 

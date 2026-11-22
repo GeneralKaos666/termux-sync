@@ -55,56 +55,69 @@ pub enum Action {
 }
 
 pub struct ActionItem {
+    pub glyph: &'static str,
     pub label: &'static str,
     pub action: Action,
 }
 
 pub const ACTIONS: &[ActionItem] = &[
     ActionItem {
+        glyph: "↑",
         label: "Backup now",
         action: Action::Backup,
     },
     ActionItem {
+        glyph: "↺",
         label: "Restore selected",
         action: Action::Restore,
     },
     ActionItem {
+        glyph: "✕",
         label: "Delete selected",
         action: Action::Delete,
     },
     ActionItem {
+        glyph: "☰",
         label: "List backups",
         action: Action::List,
     },
     ActionItem {
+        glyph: "▤",
         label: "Show logs",
         action: Action::Logs,
     },
     ActionItem {
+        glyph: "◔",
         label: "Disk check (~)",
         action: Action::DiskCheck,
     },
     ActionItem {
+        glyph: "⚙",
         label: "Setup",
         action: Action::Setup,
     },
     ActionItem {
+        glyph: "◷",
         label: "Schedule",
         action: Action::Schedule,
     },
     ActionItem {
+        glyph: "⌫",
         label: "Clear cache",
         action: Action::ClearCache,
     },
     ActionItem {
+        glyph: "⟳",
         label: "Refresh",
         action: Action::Refresh,
     },
     ActionItem {
+        glyph: "?",
         label: "Help",
         action: Action::Help,
     },
     ActionItem {
+        glyph: "↩",
         label: "Quit",
         action: Action::Quit,
     },
@@ -182,6 +195,10 @@ pub struct App {
     pub pending: Option<Vec<String>>,
     pub worker: Worker,
     pub tick: u64,
+    pub help_opened_at: u64,
+    pub pane_changed_at: u64,
+    pub pane_dir: i8,
+    pub pending_since: u64,
 }
 
 impl App {
@@ -215,7 +232,32 @@ impl App {
             pending: None,
             worker: Worker::default(),
             tick: 0,
+            help_opened_at: 0,
+            pane_changed_at: 0,
+            pane_dir: 1,
+            pending_since: 0,
         }
+    }
+
+    pub fn open_help(&mut self) {
+        self.show_help = true;
+        self.help_opened_at = self.tick;
+    }
+
+    pub fn help_progress(&self) -> f32 {
+        progress(self.tick, self.help_opened_at, 5)
+    }
+
+    pub fn pane_progress(&self) -> f32 {
+        progress(self.tick, self.pane_changed_at, 4)
+    }
+
+    pub fn launch_progress(&self) -> f32 {
+        progress(self.tick, self.pending_since, 5)
+    }
+
+    pub fn pending_ready(&self) -> bool {
+        self.pending.is_some() && self.launch_progress() >= 1.0
     }
 
     pub fn on_tick(&mut self) {
@@ -223,7 +265,7 @@ impl App {
     }
 
     pub fn spinner(&self) -> Option<&'static str> {
-        if !self.worker.is_busy() {
+        if !self.worker.is_busy() && self.pending.is_none() {
             return None;
         }
         const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -237,6 +279,9 @@ impl App {
     }
 
     pub fn handle_key(&mut self, code: KeyCode) {
+        if self.pending.is_some() {
+            return;
+        }
         if self.show_help {
             if matches!(code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')) {
                 self.show_help = false;
@@ -246,15 +291,23 @@ impl App {
 
         match code {
             KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('?') => self.show_help = true,
-            KeyCode::Tab => self.focus = self.focus.next(),
-            KeyCode::BackTab => self.focus = self.focus.previous(),
+            KeyCode::Char('?') => self.open_help(),
+            KeyCode::Tab => self.switch_focus(self.focus.next(), 1),
+            KeyCode::BackTab => self.switch_focus(self.focus.previous(), -1),
             KeyCode::Char('R') => self.refresh(),
             _ => match self.focus {
                 Focus::Actions => self.handle_actions_key(code),
                 Focus::Backups => self.handle_backups_key(code),
                 Focus::Output => self.handle_output_key(code),
             },
+        }
+    }
+
+    fn switch_focus(&mut self, focus: Focus, direction: i8) {
+        if focus != self.focus {
+            self.focus = focus;
+            self.pane_changed_at = self.tick;
+            self.pane_dir = direction;
         }
     }
 
@@ -339,7 +392,7 @@ impl App {
             Action::Logs => {
                 self.output = data::tail_log(200);
                 self.output_offset = 0;
-                self.focus = Focus::Output;
+                self.switch_focus(Focus::Output, 1);
                 self.status = "showing sync.log".to_string();
             }
             Action::DiskCheck => {
@@ -349,7 +402,7 @@ impl App {
             Action::Schedule => self.queue_command(vec!["schedule"]),
             Action::ClearCache => self.queue_command(vec!["clear-cache"]),
             Action::Refresh => self.refresh(),
-            Action::Help => self.show_help = true,
+            Action::Help => self.open_help(),
             Action::Quit => self.should_quit = true,
         }
     }
@@ -357,6 +410,7 @@ impl App {
     fn queue_command(&mut self, args: Vec<&str>) {
         let argv: Vec<String> = args.into_iter().map(str::to_string).collect();
         self.status = format!("running termux-sync {}", argv.join(" "));
+        self.pending_since = self.tick;
         self.pending = Some(argv);
     }
 
@@ -426,6 +480,14 @@ impl App {
                 .unwrap_or(0);
             self.backup_state.select(Some(index));
         }
+    }
+}
+
+fn progress(tick: u64, start: u64, ticks: u64) -> f32 {
+    if ticks == 0 {
+        1.0
+    } else {
+        (tick.saturating_sub(start) as f32 / ticks as f32).min(1.0)
     }
 }
 
@@ -536,5 +598,36 @@ mod tests {
         app.on_tick();
         assert_eq!(app.tick, 2);
         assert!(app.spinner().is_none());
+    }
+
+    #[test]
+    fn launch_waits_for_animation_before_handoff() {
+        let mut app = App::with_snapshot(snapshot());
+        app.run(Action::Backup);
+        assert!(app.pending.is_some());
+        assert!(!app.pending_ready());
+        for _ in 0..5 {
+            app.on_tick();
+        }
+        assert!(app.pending_ready());
+    }
+
+    #[test]
+    fn help_and_pane_animations_complete() {
+        let mut app = App::with_snapshot(snapshot());
+        app.open_help();
+        assert_eq!(app.help_progress(), 0.0);
+        for _ in 0..5 {
+            app.on_tick();
+        }
+        assert_eq!(app.help_progress(), 1.0);
+
+        app.handle_key(KeyCode::Char('?'));
+        app.handle_key(KeyCode::Tab);
+        assert_eq!(app.pane_progress(), 0.0);
+        for _ in 0..4 {
+            app.on_tick();
+        }
+        assert_eq!(app.pane_progress(), 1.0);
     }
 }

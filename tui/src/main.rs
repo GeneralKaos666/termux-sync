@@ -49,7 +49,9 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
 
         app.poll_worker();
 
-        if let Some(argv) = app.pending.take() {
+        if app.pending_ready()
+            && let Some(argv) = app.pending.take()
+        {
             handoff(terminal, &mut app, &argv)?;
         }
 
@@ -72,7 +74,10 @@ fn handoff(terminal: &mut DefaultTerminal, app: &mut App, argv: &[String]) -> io
     let _ = io::stdin().read_line(&mut line);
 
     *terminal = ratatui::init();
-    terminal.clear()?;
+    ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::terminal::Clear(ratatui::crossterm::terminal::ClearType::All)
+    )?;
 
     app.status = match result {
         Ok(status) if status.success() => format!("termux-sync {} finished", argv.join(" ")),
