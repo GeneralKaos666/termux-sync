@@ -1717,8 +1717,12 @@ def cmd_backup(cfg: dict, label: str = ""):
     elif cfg.get("storage") == "local" and location:
         verified = True
         root = Path(location)
-        for key, info in meta.get("files", {}).items():
+        files = list(meta.get("files", {}).items())
+        for index, (key, info) in enumerate(files, 1):
             stored = root / info.get("archive", "")
+            emit_event("progress", stage="verify", current=index,
+                       total=len(files), unit="items",
+                       detail=info.get("archive", key))
             if not stored.is_file() or sha256(stored) != info.get("checksum"):
                 verified = False
                 verify_details = f"checksum failed for {info.get('archive', key)}"
