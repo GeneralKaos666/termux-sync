@@ -1906,20 +1906,24 @@ def _cmd_restore_events(cfg: dict, backup_name: str):
 
     event_stage("verify", "Verify", 3, total_stages, "start")
     all_ok = True
-    for index, (key, info) in enumerate(manifest.get("files", {}).items(), 1):
-        if _clean_backup_name(info.get("archive", "")) != info.get("archive"):
-            all_ok = False
-            emit_event("log", level="WARNING",
-                       message=f"Unsafe archive name in manifest for {key!r}")
-            continue
-        archive = tmp_dir / info["archive"]
-        if not archive.exists() or sha256(archive) != info.get("checksum"):
-            all_ok = False
-            emit_event("log", level="ERROR",
-                       message=f"Checksum failed: {info.get('archive', key)}")
-        emit_event("progress", stage="verify", current=index,
-                   total=len(manifest.get("files", {})), unit="items",
-                   detail=info.get("archive", key))
+    try:
+        for index, (key, info) in enumerate(manifest.get("files", {}).items(), 1):
+            if _clean_backup_name(info.get("archive", "")) != info.get("archive"):
+                all_ok = False
+                emit_event("log", level="WARNING",
+                           message=f"Unsafe archive name in manifest for {key!r}")
+                continue
+            archive = tmp_dir / info["archive"]
+            if not archive.exists() or sha256(archive) != info.get("checksum"):
+                all_ok = False
+                emit_event("log", level="ERROR",
+                           message=f"Checksum failed: {info.get('archive', key)}")
+            emit_event("progress", stage="verify", current=index,
+                       total=len(manifest.get("files", {})), unit="items",
+                       detail=info.get("archive", key))
+    except KeyboardInterrupt:
+        _restore_cleanup(tmp_dir)
+        raise
 
     if not all_ok:
         _restore_cleanup(tmp_dir)
