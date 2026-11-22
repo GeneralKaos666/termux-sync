@@ -110,6 +110,70 @@ def log(level: str, message: str):
         f.write(f"[{ts}] [{level.upper()}] {message}\n")
 
 
+class EventWriter:
+    """Writes one JSON object per line so a TUI can follow an operation.
+
+    Human output moves to stderr when this is active, so stdout stays a clean
+    event stream. Secret values are replaced with ``***`` before emission."""
+
+    def __init__(self, stream, secrets: tuple[str, ...] = (), stdin=None):
+        self.stream = stream
+        self.secrets = tuple(s for s in secrets if s)
+        self.stdin = stdin
+
+    def redact(self, text: str) -> str:
+        for secret in self.secrets:
+            text = text.replace(secret, "***")
+        return text
+
+    def emit(self, event: str, **fields):
+        payload = {"v": 1, "event": event, "ts": int(time.time() * 1000)}
+        for key, value in fields.items():
+            payload[key] = self.redact(value) if isinstance(value, str) else value
+        self.stream.write(json.dumps(payload) + "\n")
+        self.stream.flush()
+
+    def stage(self, stage_id: str, label: str, state: str, index: int, total: int):
+        self.emit("stage", id=stage_id, label=label, state=state, index=index, total=total)
+
+    def progress(self, stage: str, current=None, total=None, unit: str = "bytes", detail: str = ""):
+        fields = {"stage": stage, "unit": unit}
+        if current is not None:
+            fields["current"] = current
+        if total is not None:
+            fields["total"] = total
+        if detail:
+            fields["detail"] = detail
+        self.emit("progress", **fields)
+
+    def log(self, level: str, message: str):
+        self.emit("log", level=level.upper(), message=message)
+
+    def confirm(self, expected: str = "RESTORE") -> bool:
+        stream = self.stdin if self.stdin is not None else sys.stdin
+        try:
+            line = stream.readline()
+            payload = json.loads(line)
+        except (ValueError, OSError):
+            return False
+        return payload.get("confirm") == expected
+
+
+EVENTS: Optional[EventWriter] = None
+
+
+def enable_events(stream=None, secrets: tuple[str, ...] = (), stdin=None) -> EventWriter:
+    global EVENTS
+    EVENTS = EventWriter(stream if stream is not None else sys.stdout, secrets, stdin)
+    return EVENTS
+
+
+def _config_secrets(cfg: dict) -> tuple[str, ...]:
+    return tuple(
+        value for value in (cfg.get("github_token", ""), cfg.get("encrypt_password", "")) if value
+    )
+
+
 DEFAULT_CONFIG = {
     "storage": "local",
     "local_path": str(DEFAULT_DEST),
