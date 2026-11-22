@@ -1,6 +1,6 @@
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::{ListState, TableState};
 
@@ -209,6 +209,8 @@ pub struct App {
     pub pending_since: u64,
     pub task: Option<TaskOverlay>,
     pub output_shown_at: u64,
+    pub loading: bool,
+    pub help_scroll: usize,
     pub actions_area: Rect,
     pub backups_area: Rect,
     pub output_area: Rect,
@@ -216,7 +218,12 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
-        Self::with_snapshot(data::load_snapshot())
+        let mut app = Self::with_snapshot(Snapshot::default());
+        app.loading = true;
+        app.status = "loading backups…".to_string();
+        app.refresh();
+        app.status = "loading backups…".to_string();
+        app
     }
 
     pub fn with_snapshot(snapshot: Snapshot) -> Self {
@@ -251,6 +258,8 @@ impl App {
             pending_since: 0,
             task: None,
             output_shown_at: 0,
+            loading: false,
+            help_scroll: 0,
             actions_area: Rect::default(),
             backups_area: Rect::default(),
             output_area: Rect::default(),
@@ -260,9 +269,13 @@ impl App {
     pub fn open_help(&mut self) {
         self.show_help = true;
         self.help_opened_at = self.tick;
+        self.help_scroll = 0;
     }
 
     pub fn help_progress(&self) -> f32 {
+        if !self.show_help {
+            return 1.0;
+        }
         progress(self.tick, self.help_opened_at, 5)
     }
 
@@ -301,6 +314,15 @@ impl App {
         progress(self.tick, self.output_shown_at, 4)
     }
 
+    pub fn needs_tick(&self) -> bool {
+        self.worker.is_busy()
+            || self.pending.is_some()
+            || self.task.is_some()
+            || self.help_progress() < 1.0
+            || self.pane_progress() < 1.0
+            || self.output_progress() < 1.0
+    }
+
     pub fn spinner(&self) -> Option<&'static str> {
         if !self.worker.is_busy() && self.pending.is_none() {
             return None;
@@ -315,13 +337,40 @@ impl App {
             .and_then(|index| self.snapshot.backups.get(index))
     }
 
+    #[cfg(test)]
     pub fn handle_key(&mut self, code: KeyCode) {
+        self.handle_key_with(code, KeyModifiers::NONE);
+    }
+
+    pub fn handle_key_event(&mut self, key: KeyEvent) {
+        self.handle_key_with(key.code, key.modifiers);
+    }
+
+    fn handle_key_with(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        if modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Char('c') | KeyCode::Char('C'))
+        {
+            self.pending = None;
+            self.should_quit = true;
+            return;
+        }
+
         if self.pending.is_some() {
             return;
         }
         if self.show_help {
-            if matches!(code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')) {
-                self.show_help = false;
+            match code {
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                    self.show_help = false;
+                    self.help_scroll = 0;
+                }
+                KeyCode::Down | KeyCode::Char('j') => self.help_scroll += 1,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1);
+                }
+                KeyCode::PageDown => self.help_scroll += 5,
+                KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(5),
+                _ => {}
             }
             return;
         }
@@ -522,9 +571,9 @@ impl App {
         self.start_task(Task::Refresh);
     }
 
-    pub fn poll_worker(&mut self) {
+    pub fn poll_worker(&mut self) -> bool {
         let Some(result) = self.worker.poll() else {
-            return;
+            return false;
         };
         if let Some(task) = &mut self.task {
             task.done = true;
@@ -548,11 +597,13 @@ impl App {
                 self.status = "command failed".to_string();
             }
         }
+        true
     }
 
     pub fn apply_snapshot(&mut self, snapshot: Snapshot) {
         let selected_name = self.selected_backup().map(|backup| backup.name.clone());
 
+        self.loading = false;
         self.status = snapshot
             .warning
             .clone()
@@ -746,6 +797,40 @@ mod tests {
         assert!(app.task.is_some());
         app.on_tick();
         assert!(app.task.is_none());
+    }
+
+    #[test]
+    fn ctrl_c_quits_even_with_pending_command() {
+        let mut app = App::with_snapshot(snapshot());
+        app.run(Action::Backup);
+        assert!(app.pending.is_some());
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.should_quit);
+        assert!(app.pending.is_none());
+    }
+
+    #[test]
+    fn help_scroll_moves_without_leaving_bounds() {
+        let mut app = App::with_snapshot(snapshot());
+        app.open_help();
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.help_scroll, 1);
+        app.handle_key(KeyCode::PageDown);
+        assert_eq!(app.help_scroll, 6);
+        app.handle_key(KeyCode::PageUp);
+        app.handle_key(KeyCode::PageUp);
+        assert_eq!(app.help_scroll, 0);
+    }
+
+    #[test]
+    fn idle_app_stops_requesting_ticks() {
+        let mut app = App::with_snapshot(snapshot());
+        for _ in 0..10 {
+            if app.needs_tick() {
+                app.on_tick();
+            }
+        }
+        assert!(!app.needs_tick());
     }
 
     #[test]

@@ -24,6 +24,10 @@ It never reimplements backup logic. Read-only views come from
   pane, handoff commands show a spinner card before the terminal changes
   hands, and captured commands (`list`, `disk check`) show a WORKING card
   with a sweeping progress bar, hold a DONE state, then slide output in.
+- Startup draws immediately and loads backups in a worker; the header shows
+  `LOADING` until the first snapshot arrives.
+- Idle app does not redraw on a timer. Frames are produced on input, worker
+  results, resize, and active animations only. Ctrl+C always quits.
 
 ## Build and run
 
@@ -55,6 +59,8 @@ TERMUX_SYNC_BIN=/path/to/termux-sync ./target/release/termux-sync-tui
 | `R` | refresh backups and status |
 | `g` / `G` | top / bottom of output |
 | `?` | help |
+| `↑` / `↓` in help | scroll help at small sizes |
+| `Ctrl+C` | quit immediately, even during a task |
 | `q` | quit |
 
 Mouse: click an action to run it, click a backup row to select it, click a pane

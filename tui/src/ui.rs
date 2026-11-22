@@ -118,15 +118,24 @@ fn render_hero(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(Line::from(title)), left);
 
     let count = app.snapshot.backups.len();
-    let count_label = if count == 1 {
+    let count_label = if app.loading {
+        "LOADING".to_string()
+    } else if count == 1 {
         "1 BACKUP".to_string()
     } else {
         format!("{count} BACKUPS")
     };
+    let count_color = if app.loading {
+        ACCENT
+    } else if count == 0 {
+        MUTED
+    } else {
+        SUCCESS
+    };
     let mut chips = vec![
         badge(&app.snapshot.config.storage.to_uppercase(), ACCENT),
         Span::raw(" "),
-        badge(&count_label, if count == 0 { MUTED } else { SUCCESS }),
+        badge(&count_label, count_color),
     ];
     if app.snapshot.warning.is_some() {
         chips.push(Span::raw(" "));
@@ -149,25 +158,29 @@ fn render_stats(frame: &mut Frame, area: Rect, app: &App) {
         .backups
         .first()
         .map_or(0, |backup| backup.packages);
+    let placeholder = app.loading.then_some("…".to_string());
+    let backups_value = placeholder
+        .clone()
+        .unwrap_or_else(|| app.snapshot.backups.len().to_string());
+    let stored_value = placeholder
+        .clone()
+        .unwrap_or_else(|| human_size(total_size));
+    let packages_value = placeholder
+        .clone()
+        .unwrap_or_else(|| latest_packages.to_string());
+    let auto_value = placeholder.unwrap_or_else(|| app.snapshot.config.schedule.clone());
 
-    stat_card(
-        frame,
-        backups,
-        "BACKUPS",
-        &app.snapshot.backups.len().to_string(),
-        "saved",
-        SUCCESS,
-    );
-    stat_card(frame, stored, "STORED", &human_size(total_size), "", ACCENT);
+    stat_card(frame, backups, "BACKUPS", &backups_value, "saved", SUCCESS);
+    stat_card(frame, stored, "STORED", &stored_value, "", ACCENT);
     stat_card(
         frame,
         packages,
         "PACKAGES",
-        &latest_packages.to_string(),
+        &packages_value,
         "latest",
         MAGENTA,
     );
-    stat_card(frame, auto, "AUTO", &app.snapshot.config.schedule, "", WARN);
+    stat_card(frame, auto, "AUTO", &auto_value, "", WARN);
 }
 
 fn stat_card(frame: &mut Frame, area: Rect, title: &str, value: &str, unit: &str, color: Color) {
@@ -275,8 +288,16 @@ fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
             .warning
             .clone()
             .unwrap_or_else(|| "No local backups. Press R to refresh.".to_string());
+        let (title, message) = if app.loading {
+            (
+                format!("{} Loading backups", app.spinner().unwrap_or("◐")),
+                "Reading manifests and log…".to_string(),
+            )
+        } else {
+            ("No backups here".to_string(), message)
+        };
         let paragraph = Paragraph::new(Text::from(vec![
-            Line::from(Span::styled("No backups here", fg(MUTED).bold())),
+            Line::from(Span::styled(title, fg(MUTED).bold())),
             Line::from(Span::styled(message, fg(MUTED))),
         ]))
         .alignment(Alignment::Center);
@@ -529,6 +550,8 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         ("R", "refresh backups and status"),
         ("g / G", "top / bottom of output"),
         ("?  / Esc", "close this help"),
+        ("↑ / ↓", "scroll this help"),
+        ("Ctrl+C", "quit immediately"),
         ("q", "quit"),
     ] {
         lines.push(Line::from(vec![
@@ -552,9 +575,15 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         fg(MUTED),
     )));
 
+    let inner_height = popup.height.saturating_sub(2) as usize;
+    let max_scroll = lines.len().saturating_sub(inner_height);
+    let scroll = app.help_scroll.min(max_scroll);
+    let visible: Vec<Line> = lines.into_iter().skip(scroll).take(inner_height).collect();
+    let detail = (max_scroll > 0).then_some("↑↓ scroll");
+
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(Text::from(lines)).block(pane_block("Help", None, true, ACCENT)),
+        Paragraph::new(Text::from(visible)).block(pane_block("Help", detail, true, ACCENT)),
         popup,
     );
 }
@@ -798,6 +827,7 @@ mod tests {
     use crate::data::{Backup, Config, Snapshot};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::KeyCode;
 
     fn app() -> App {
         App::with_snapshot(Snapshot {
@@ -962,6 +992,63 @@ mod tests {
             .collect();
         assert!(content.contains("WORKING"));
         assert!(content.contains("termux-sync list"));
+    }
+
+    #[test]
+    fn help_scrolls_at_the_minimum_size() {
+        let backend = TestBackend::new(48, 12);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = app();
+        app.open_help();
+        for _ in 0..5 {
+            app.on_tick();
+        }
+        for _ in 0..10 {
+            app.handle_key(KeyCode::Down);
+        }
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("draw succeeds");
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("clear cache"));
+        assert!(content.contains("↑↓ scroll"));
+    }
+
+    #[test]
+    fn loading_state_names_what_is_happening() {
+        let mut app = app();
+        app.snapshot.backups.clear();
+        app.loading = true;
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("draw succeeds");
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("LOADING"));
+        assert!(content.contains("Loading backups"));
+    }
+
+    #[test]
+    fn standard_size_keeps_all_panes() {
+        let frame = render_at(80, 24);
+        assert!(frame.contains("TERMUX SYNC"));
+        assert!(frame.contains("Actions"));
+        assert!(frame.contains("Backups"));
+        assert!(frame.contains("Output"));
+        assert!(frame.contains("ACTIONS"));
     }
 
     #[test]

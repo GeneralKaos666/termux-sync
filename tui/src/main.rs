@@ -6,14 +6,19 @@ use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseButton, MouseEventKind,
 };
 use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{Clear, ClearType, EnterAlternateScreen, enable_raw_mode};
 
 use crate::app::App;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const FRAME_TIME: Duration = Duration::from_millis(100);
+const IDLE_TIME: Duration = Duration::from_millis(1_000);
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -30,58 +35,99 @@ fn main() -> io::Result<()> {
         std::process::exit(2);
     }
 
-    let original_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(io::stdout(), DisableMouseCapture);
-        original_hook(info);
-    }));
-
-    let mut terminal = ratatui::init();
-    execute!(io::stdout(), EnableMouseCapture)?;
+    install_panic_hook();
+    let mut terminal = match init_terminal() {
+        Ok(terminal) => terminal,
+        Err(err) => {
+            restore_terminal();
+            return Err(err);
+        }
+    };
     let result = run(&mut terminal);
-    let _ = execute!(io::stdout(), DisableMouseCapture);
-    ratatui::restore();
+    restore_terminal();
     result
 }
 
 fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
     let mut app = App::new();
+    let mut redraw = true;
 
     loop {
-        app.on_tick();
-        terminal.draw(|frame| ui::draw(frame, &mut app))?;
+        if redraw {
+            terminal.draw(|frame| ui::draw(frame, &mut app))?;
+            redraw = false;
+        }
 
-        if event::poll(Duration::from_millis(100))? {
+        let timeout = if app.needs_tick() {
+            FRAME_TIME
+        } else {
+            IDLE_TIME
+        };
+        if event::poll(timeout)? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    app.handle_key(key.code);
+                    app.handle_key_event(key);
+                    redraw = true;
                 }
                 Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
                     app.handle_mouse(mouse.column, mouse.row);
+                    redraw = true;
                 }
+                Event::Resize(_, _) => redraw = true,
                 _ => {}
             }
         }
 
-        app.poll_worker();
+        if app.needs_tick() {
+            app.on_tick();
+            redraw = true;
+        }
+
+        if app.poll_worker() {
+            redraw = true;
+        }
+
+        if app.should_quit {
+            break;
+        }
 
         if app.pending_ready()
             && let Some(argv) = app.pending.take()
         {
             handoff(terminal, &mut app, &argv)?;
-        }
-
-        if app.should_quit {
-            break;
+            redraw = true;
         }
     }
 
     Ok(())
 }
 
-fn handoff(terminal: &mut DefaultTerminal, app: &mut App, argv: &[String]) -> io::Result<()> {
+fn init_terminal() -> io::Result<DefaultTerminal> {
+    enable_raw_mode()?;
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        Clear(ClearType::All)
+    )?;
+    Terminal::new(CrosstermBackend::new(io::stdout()))
+}
+
+fn restore_terminal() {
     let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
+}
+
+fn install_panic_hook() {
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        original_hook(info);
+    }));
+}
+
+fn handoff(terminal: &mut DefaultTerminal, app: &mut App, argv: &[String]) -> io::Result<()> {
+    restore_terminal();
 
     let result = data::cli_command(argv).status();
 
@@ -90,12 +136,7 @@ fn handoff(terminal: &mut DefaultTerminal, app: &mut App, argv: &[String]) -> io
     let mut line = String::new();
     let _ = io::stdin().read_line(&mut line);
 
-    *terminal = ratatui::init();
-    execute!(
-        io::stdout(),
-        EnableMouseCapture,
-        ratatui::crossterm::terminal::Clear(ratatui::crossterm::terminal::ClearType::All)
-    )?;
+    *terminal = init_terminal()?;
 
     app.status = match result {
         Ok(status) if status.success() => format!("termux-sync {} finished", argv.join(" ")),
@@ -122,6 +163,7 @@ Keys:
   R          refresh backups and status
   ?          help
   q          quit
+  Ctrl+C     quit immediately
 
 Environment:
   TERMUX_SYNC_BIN   termux-sync executable to run (default: termux-sync)"
