@@ -21,8 +21,9 @@ It never reimplements backup logic. Read-only views come from
 - Output pane: scrollable log tail and captured command output, with dimmed
   dates and INFO / WARNING / ERROR chips.
 - Motion: help expands from a small card, narrow layouts reveal the incoming
-  pane, and handoff commands show a spinner card before the terminal changes
-  hands.
+  pane, handoff commands show a spinner card before the terminal changes
+  hands, and captured commands (`list`, `disk check`) show a WORKING card
+  that holds a brief DONE state before revealing output.
 
 ## Build and run
 

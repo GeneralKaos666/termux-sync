@@ -82,6 +82,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.pending.is_some() {
         render_launch(frame, area, app);
     }
+
+    if app.task.is_some() {
+        render_task(frame, area, app);
+    }
 }
 
 fn render_hero(frame: &mut Frame, area: Rect, app: &App) {
@@ -567,6 +571,47 @@ fn render_launch(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+fn render_task(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(task) = &app.task else {
+        return;
+    };
+    let progress = ease_out(app.task_progress());
+    let max_width = area.width.saturating_sub(2).max(20) as f32;
+    let max_height = area.height.saturating_sub(2).max(5) as f32;
+    let width = (36.0 + 24.0 * progress).min(max_width) as u16;
+    let height = (5.0 + 2.0 * progress).min(max_height) as u16;
+    let popup = centered(area, width, height);
+
+    let (title, marker, color, detail) = if task.done {
+        ("DONE", "✓", SUCCESS, "Captured output is ready")
+    } else {
+        (
+            "WORKING",
+            app.spinner().unwrap_or("◐"),
+            ACCENT,
+            "Capturing command output…",
+        )
+    };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("◆ ", fg(color).bold()),
+            Span::styled(title, fg(color).bold()),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("{marker} "), fg(color).bold()),
+            Span::styled(task.label.clone(), fg(SUCCESS).bold()),
+        ]),
+        Line::from(Span::styled(detail, fg(MUTED))),
+    ];
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).block(pane_block(title, None, true, color)),
+        popup,
+    );
+}
+
 fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
@@ -837,6 +882,32 @@ mod tests {
             "20260101_120000"
         );
         assert_eq!(short_name("custom-name"), "custom-name");
+    }
+
+    #[test]
+    fn task_overlay_renders_for_captured_commands() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = app();
+        app.task = Some(crate::app::TaskOverlay {
+            label: "termux-sync list".to_string(),
+            started_at: 0,
+            done: false,
+            done_at: 0,
+        });
+        app.on_tick();
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("draw succeeds");
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("WORKING"));
+        assert!(content.contains("termux-sync list"));
     }
 
     #[test]

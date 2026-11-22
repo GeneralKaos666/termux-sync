@@ -139,6 +139,13 @@ pub struct Worker {
     busy: bool,
 }
 
+pub struct TaskOverlay {
+    pub label: String,
+    pub started_at: u64,
+    pub done: bool,
+    pub done_at: u64,
+}
+
 impl Worker {
     pub fn is_busy(&self) -> bool {
         self.busy
@@ -199,6 +206,7 @@ pub struct App {
     pub pane_changed_at: u64,
     pub pane_dir: i8,
     pub pending_since: u64,
+    pub task: Option<TaskOverlay>,
 }
 
 impl App {
@@ -236,6 +244,7 @@ impl App {
             pane_changed_at: 0,
             pane_dir: 1,
             pending_since: 0,
+            task: None,
         }
     }
 
@@ -262,6 +271,20 @@ impl App {
 
     pub fn on_tick(&mut self) {
         self.tick = self.tick.wrapping_add(1);
+        if self
+            .task
+            .as_ref()
+            .is_some_and(|task| task.done && self.tick.saturating_sub(task.done_at) >= 3)
+        {
+            self.task = None;
+        }
+    }
+
+    pub fn task_progress(&self) -> f32 {
+        match &self.task {
+            Some(task) => progress(self.tick, task.started_at, 3),
+            None => 1.0,
+        }
     }
 
     pub fn spinner(&self) -> Option<&'static str> {
@@ -421,10 +444,19 @@ impl App {
         }
         let label = match &task {
             Task::Refresh => "refreshing".to_string(),
-            Task::Command(args) => format!("running termux-sync {}", args.join(" ")),
+            Task::Command(args) => format!("termux-sync {}", args.join(" ")),
         };
+        let show_overlay = matches!(&task, Task::Command(_));
         if self.worker.start(task) {
-            self.status = label;
+            self.status = label.clone();
+            if show_overlay {
+                self.task = Some(TaskOverlay {
+                    label,
+                    started_at: self.tick,
+                    done: false,
+                    done_at: 0,
+                });
+            }
         }
     }
 
@@ -436,6 +468,10 @@ impl App {
         let Some(result) = self.worker.poll() else {
             return;
         };
+        if let Some(task) = &mut self.task {
+            task.done = true;
+            task.done_at = self.tick;
+        }
         match result {
             Ok(WorkerMsg::Refreshed(snapshot)) => self.apply_snapshot(snapshot),
             Ok(WorkerMsg::Output { title, text }) => {
@@ -443,14 +479,14 @@ impl App {
                 self.output.push(format!("$ termux-sync {title}"));
                 self.output.extend(text.lines().map(str::to_string));
                 self.output_offset = 0;
-                self.focus = Focus::Output;
+                self.switch_focus(Focus::Output, 1);
                 self.status = format!("termux-sync {title} finished");
             }
             Err(err) => {
                 self.output.clear();
                 self.output.extend(err.lines().map(str::to_string));
                 self.output_offset = 0;
-                self.focus = Focus::Output;
+                self.switch_focus(Focus::Output, 1);
                 self.status = "command failed".to_string();
             }
         }
@@ -610,6 +646,29 @@ mod tests {
             app.on_tick();
         }
         assert!(app.pending_ready());
+    }
+
+    #[test]
+    fn task_overlay_holds_completion_before_dismissing() {
+        let mut app = App::with_snapshot(snapshot());
+        app.task = Some(TaskOverlay {
+            label: "termux-sync list".to_string(),
+            started_at: 0,
+            done: false,
+            done_at: 0,
+        });
+        for _ in 0..3 {
+            app.on_tick();
+        }
+        assert_eq!(app.task_progress(), 1.0);
+
+        app.task.as_mut().unwrap().done = true;
+        app.task.as_mut().unwrap().done_at = app.tick;
+        app.on_tick();
+        app.on_tick();
+        assert!(app.task.is_some());
+        app.on_tick();
+        assert!(app.task.is_none());
     }
 
     #[test]
