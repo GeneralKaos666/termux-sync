@@ -546,6 +546,9 @@ impl App {
             KeyCode::Esc => {
                 operation.request_cancel();
             }
+            KeyCode::Char('q') | KeyCode::Char('c') if plain => {
+                operation.request_cancel();
+            }
             KeyCode::Char('d') if plain => {
                 operation.diff_open = true;
                 operation.diff_scroll = 0;
@@ -578,6 +581,9 @@ impl App {
             KeyCode::Esc => {
                 operation.diff_open = false;
                 operation.diff_filtering = false;
+            }
+            KeyCode::Char('q') | KeyCode::Char('c') if plain => {
+                operation.request_cancel();
             }
             KeyCode::Char('d') if plain => {
                 operation.diff_open = false;
