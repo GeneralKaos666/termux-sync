@@ -6,7 +6,10 @@ use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseButton, MouseEventKind,
+};
+use ratatui::crossterm::execute;
 
 use crate::app::App;
 
@@ -27,8 +30,16 @@ fn main() -> io::Result<()> {
         std::process::exit(2);
     }
 
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+        original_hook(info);
+    }));
+
     let mut terminal = ratatui::init();
+    execute!(io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal);
+    let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -40,11 +51,16 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
         app.on_tick();
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
-        if event::poll(Duration::from_millis(100))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            app.handle_key(key.code);
+        if event::poll(Duration::from_millis(100))? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    app.handle_key(key.code);
+                }
+                Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                    app.handle_mouse(mouse.column, mouse.row);
+                }
+                _ => {}
+            }
         }
 
         app.poll_worker();
@@ -64,6 +80,7 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
 }
 
 fn handoff(terminal: &mut DefaultTerminal, app: &mut App, argv: &[String]) -> io::Result<()> {
+    let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
 
     let result = data::cli_command(argv).status();
@@ -74,8 +91,9 @@ fn handoff(terminal: &mut DefaultTerminal, app: &mut App, argv: &[String]) -> io
     let _ = io::stdin().read_line(&mut line);
 
     *terminal = ratatui::init();
-    ratatui::crossterm::execute!(
-        std::io::stdout(),
+    execute!(
+        io::stdout(),
+        EnableMouseCapture,
         ratatui::crossterm::terminal::Clear(ratatui::crossterm::terminal::ClearType::All)
     )?;
 
@@ -98,6 +116,7 @@ Usage: termux-sync-tui
 Keys:
   ↑ / ↓      move selection
   Enter      run action or restore selected backup
+  Click      run an action, select a backup, focus a pane
   d          delete selected backup
   Tab        switch pane
   R          refresh backups and status

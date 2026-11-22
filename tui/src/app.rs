@@ -1,6 +1,7 @@
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use ratatui::crossterm::event::KeyCode;
+use ratatui::layout::{Position, Rect};
 use ratatui::widgets::{ListState, TableState};
 
 use crate::data::{self, Backup, Snapshot};
@@ -207,6 +208,10 @@ pub struct App {
     pub pane_dir: i8,
     pub pending_since: u64,
     pub task: Option<TaskOverlay>,
+    pub output_shown_at: u64,
+    pub actions_area: Rect,
+    pub backups_area: Rect,
+    pub output_area: Rect,
 }
 
 impl App {
@@ -245,6 +250,10 @@ impl App {
             pane_dir: 1,
             pending_since: 0,
             task: None,
+            output_shown_at: 0,
+            actions_area: Rect::default(),
+            backups_area: Rect::default(),
+            output_area: Rect::default(),
         }
     }
 
@@ -274,17 +283,22 @@ impl App {
         if self
             .task
             .as_ref()
-            .is_some_and(|task| task.done && self.tick.saturating_sub(task.done_at) >= 3)
+            .is_some_and(|task| task.done && self.tick.saturating_sub(task.done_at) >= 5)
         {
             self.task = None;
+            self.output_shown_at = self.tick;
         }
     }
 
     pub fn task_progress(&self) -> f32 {
         match &self.task {
-            Some(task) => progress(self.tick, task.started_at, 3),
+            Some(task) => progress(self.tick, task.started_at, 5),
             None => 1.0,
         }
+    }
+
+    pub fn output_progress(&self) -> f32 {
+        progress(self.tick, self.output_shown_at, 4)
     }
 
     pub fn spinner(&self) -> Option<&'static str> {
@@ -331,6 +345,49 @@ impl App {
             self.focus = focus;
             self.pane_changed_at = self.tick;
             self.pane_dir = direction;
+        }
+    }
+
+    pub fn handle_mouse(&mut self, column: u16, row: u16) {
+        if self.pending.is_some() || self.task.is_some() || self.show_help {
+            return;
+        }
+        let point = Position::new(column, row);
+
+        if self.actions_area.contains(point) {
+            let first_row = self.actions_area.y.saturating_add(1);
+            let last_row = self
+                .actions_area
+                .y
+                .saturating_add(self.actions_area.height)
+                .saturating_sub(1);
+            if row >= first_row && row < last_row {
+                let index = (row - first_row) as usize + self.action_state.offset();
+                if index < ACTIONS.len() {
+                    self.action_state.select(Some(index));
+                    self.switch_focus(Focus::Actions, -1);
+                    self.run(ACTIONS[index].action);
+                }
+            } else {
+                self.switch_focus(Focus::Actions, -1);
+            }
+            return;
+        }
+
+        if self.backups_area.contains(point) {
+            self.switch_focus(Focus::Backups, 1);
+            let first_data = self.backups_area.y.saturating_add(2);
+            if row >= first_data {
+                let index = (row - first_data) as usize + self.backup_state.offset();
+                if index < self.snapshot.backups.len() {
+                    self.backup_state.select(Some(index));
+                }
+            }
+            return;
+        }
+
+        if self.output_area.contains(point) {
+            self.switch_focus(Focus::Output, 1);
         }
     }
 
@@ -415,6 +472,7 @@ impl App {
             Action::Logs => {
                 self.output = data::tail_log(200);
                 self.output_offset = 0;
+                self.output_shown_at = self.tick;
                 self.switch_focus(Focus::Output, 1);
                 self.status = "showing sync.log".to_string();
             }
@@ -502,6 +560,7 @@ impl App {
         self.snapshot = snapshot;
         self.output = self.snapshot.log.clone();
         self.output_offset = 0;
+        self.output_shown_at = self.tick;
 
         if self.snapshot.backups.is_empty() {
             self.backup_state.select(None);
@@ -649,6 +708,23 @@ mod tests {
     }
 
     #[test]
+    fn clicking_an_action_runs_it() {
+        let mut app = App::with_snapshot(snapshot());
+        app.actions_area = Rect::new(0, 0, 26, 20);
+        app.handle_mouse(2, 11);
+        assert!(app.show_help);
+    }
+
+    #[test]
+    fn clicking_a_backup_row_selects_it() {
+        let mut app = App::with_snapshot(snapshot());
+        app.backups_area = Rect::new(26, 0, 50, 10);
+        app.handle_mouse(30, 3);
+        assert_eq!(app.focus, Focus::Backups);
+        assert_eq!(app.backup_state.selected(), Some(1));
+    }
+
+    #[test]
     fn task_overlay_holds_completion_before_dismissing() {
         let mut app = App::with_snapshot(snapshot());
         app.task = Some(TaskOverlay {
@@ -657,15 +733,16 @@ mod tests {
             done: false,
             done_at: 0,
         });
-        for _ in 0..3 {
+        for _ in 0..5 {
             app.on_tick();
         }
         assert_eq!(app.task_progress(), 1.0);
 
         app.task.as_mut().unwrap().done = true;
         app.task.as_mut().unwrap().done_at = app.tick;
-        app.on_tick();
-        app.on_tick();
+        for _ in 0..4 {
+            app.on_tick();
+        }
         assert!(app.task.is_some());
         app.on_tick();
         assert!(app.task.is_none());

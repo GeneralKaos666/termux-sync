@@ -23,7 +23,7 @@ It never reimplements backup logic. Read-only views come from
 - Motion: help expands from a small card, narrow layouts reveal the incoming
   pane, handoff commands show a spinner card before the terminal changes
   hands, and captured commands (`list`, `disk check`) show a WORKING card
-  that holds a brief DONE state before revealing output.
+  with a sweeping progress bar, hold a DONE state, then slide output in.
 
 ## Build and run
 
@@ -56,6 +56,10 @@ TERMUX_SYNC_BIN=/path/to/termux-sync ./target/release/termux-sync-tui
 | `g` / `G` | top / bottom of output |
 | `?` | help |
 | `q` | quit |
+
+Mouse: click an action to run it, click a backup row to select it, click a pane
+to focus it. Mouse capture disables terminal text selection; hold Shift to
+select text in most terminals.
 
 ## Layout
 

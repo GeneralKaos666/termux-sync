@@ -42,6 +42,10 @@ pub fn plan(area: Rect) -> LayoutPlan {
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
+    app.actions_area = Rect::default();
+    app.backups_area = Rect::default();
+    app.output_area = Rect::default();
+
     if plan(area) == LayoutPlan::TooSmall {
         render_too_small(frame, area);
         return;
@@ -216,6 +220,7 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn render_actions(frame: &mut Frame, area: Rect, app: &mut App) {
+    app.actions_area = area;
     let inner = area.width.saturating_sub(4) as usize;
     let label_width = inner.saturating_sub(2);
     let items: Vec<ListItem> = ACTIONS
@@ -240,6 +245,7 @@ fn render_actions(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
+    app.backups_area = area;
     let detail = app.selected_backup().map(|backup| {
         let mut parts = Vec::new();
         if !backup.label.is_empty() {
@@ -320,19 +326,32 @@ fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_stateful_widget(table, area, &mut app.backup_state);
 }
 
-fn render_output(frame: &mut Frame, area: Rect, app: &App) {
+fn render_output(frame: &mut Frame, area: Rect, app: &mut App) {
+    app.output_area = area;
     let block = pane_block("Output", None, app.focus == Focus::Output, MAGENTA);
-    let inner_height = block.inner(area).height as usize;
+    let inner = block.inner(area);
+    let inner_height = inner.height as usize;
     let len = app.output.len();
     let max_offset = len.saturating_sub(inner_height);
     let offset = app.output_offset.min(max_offset);
     let end = len.saturating_sub(offset);
     let start = end.saturating_sub(inner_height);
 
-    let lines: Vec<Line> = app.output[start..end]
+    let mut lines: Vec<Line> = app.output[start..end]
         .iter()
         .map(|line| render_log_line(line))
         .collect();
+
+    let progress = ease_out(app.output_progress());
+    if progress < 1.0 {
+        frame.render_widget(Clear, inner);
+        let shift = (((1.0 - progress) * inner_height as f32) * 0.6).round() as usize;
+        if shift > 0 {
+            let mut shifted = vec![Line::default(); shift];
+            shifted.append(&mut lines);
+            lines = shifted;
+        }
+    }
 
     frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
 }
@@ -504,6 +523,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     for (key, action) in [
         ("↑ / ↓", "move selection"),
         ("Enter", "run action or restore selected backup"),
+        ("Click", "run action, select backup, focus pane"),
         ("d", "delete selected backup"),
         ("Tab", "switch pane"),
         ("R", "refresh backups and status"),
@@ -577,9 +597,9 @@ fn render_task(frame: &mut Frame, area: Rect, app: &App) {
     };
     let progress = ease_out(app.task_progress());
     let max_width = area.width.saturating_sub(2).max(20) as f32;
-    let max_height = area.height.saturating_sub(2).max(5) as f32;
-    let width = (36.0 + 24.0 * progress).min(max_width) as u16;
-    let height = (5.0 + 2.0 * progress).min(max_height) as u16;
+    let max_height = area.height.saturating_sub(2).max(6) as f32;
+    let width = (32.0 + 32.0 * progress).min(max_width) as u16;
+    let height = (6.0 + 2.0 * progress).min(max_height) as u16;
     let popup = centered(area, width, height);
 
     let (title, marker, color, detail) = if task.done {
@@ -603,6 +623,11 @@ fn render_task(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(task.label.clone(), fg(SUCCESS).bold()),
         ]),
         Line::from(Span::styled(detail, fg(MUTED))),
+        sweep_bar(
+            (width.saturating_sub(4) as usize).clamp(8, 24),
+            app.tick,
+            task.done,
+        ),
     ];
 
     frame.render_widget(Clear, popup);
@@ -610,6 +635,32 @@ fn render_task(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(Text::from(lines)).block(pane_block(title, None, true, color)),
         popup,
     );
+}
+
+fn sweep_bar(width: usize, tick: u64, done: bool) -> Line<'static> {
+    let (filled, empty, color) = if done {
+        ("▰", "", SUCCESS)
+    } else if no_color() {
+        ("#", "-", SUCCESS)
+    } else {
+        ("▰", "▱", ACCENT)
+    };
+    if done {
+        return Line::from(Span::styled(filled.repeat(width), fg(color)));
+    }
+
+    let cycle = (width + 6) as u64;
+    let head = (tick % cycle) as usize;
+    let mut bar = String::with_capacity(width);
+    for index in 0..width {
+        let lit = if head >= 6 {
+            (head - 6..head).contains(&index)
+        } else {
+            index < head || index >= width.saturating_sub(6 - head)
+        };
+        bar.push_str(if lit { filled } else { empty });
+    }
+    Line::from(Span::styled(bar, fg(color)))
 }
 
 fn ease_out(t: f32) -> f32 {
@@ -770,6 +821,9 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let mut app = app();
+        for _ in 0..6 {
+            app.on_tick();
+        }
         terminal
             .draw(|frame| draw(frame, &mut app))
             .expect("draw succeeds");
