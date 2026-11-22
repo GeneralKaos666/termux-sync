@@ -26,7 +26,8 @@ schedule, delete and clear-cache still hand the terminal to `termux-sync`.
   streams download, verification, extraction and package reinstall.
 - Restore safety: checksums must pass before extraction. Cancel is allowed
   only during metadata, download and verification. After extraction starts,
-  cancel is refused and the screen says so.
+  cancel is refused and the screen says so. Cancel asks once: Enter confirms,
+  Esc dismisses.
 - Package diff: `d` from the restore plan opens `TO INSTALL`,
   `ALREADY INSTALLED` and `DEVICE ONLY` sections with a persistent warning
   that every backup package is reinstalled.
@@ -73,14 +74,14 @@ Disable motion with `--no-anim` or `TERMUX_SYNC_TUI_REDUCED_MOTION=1`.
 | `g` / `G` | top / bottom of output |
 | `?` | help |
 | `↑` / `↓` in help | scroll help at small sizes |
-| `Ctrl+C` | quit immediately, even during a task |
+| `Ctrl+C` | quit immediately; refused during a protected restore |
 | `q` | quit |
 
 Operation keys:
 
 | Key | Action |
 |---|---|
-| `Esc` / `c` | cancel while allowed; otherwise explain why not |
+| `Esc` / `c` | cancel while allowed; asks once, or explains why not |
 | `d` | open package diff on the restore plan |
 | `1` / `2` / `3` | jump diff sections |
 | `/` | filter the current diff section |

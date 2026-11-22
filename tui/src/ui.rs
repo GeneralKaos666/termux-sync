@@ -122,6 +122,39 @@ fn render_operation(frame: &mut Frame, area: Rect, app: &App, operation: &Operat
         }
     }
     render_operation_footer(frame, footer, app, operation);
+    if operation.cancel_prompt {
+        render_cancel_prompt(frame, area, operation);
+    }
+}
+
+fn render_cancel_prompt(frame: &mut Frame, area: Rect, operation: &Operation) {
+    let width = area.width.saturating_sub(4).clamp(30, 56);
+    let popup = centered(area, width, 7);
+    let what = match operation.kind {
+        Kind::Backup => "backup",
+        Kind::Restore => "restore",
+    };
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("Cancel {what} and clean partial files?"),
+            fg(WARN).bold(),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" Enter ", fg(SUCCESS).bold()),
+            Span::styled("yes", fg(MUTED)),
+            Span::raw("    "),
+            Span::styled(" Esc ", fg(ACCENT).bold()),
+            Span::styled("no", fg(MUTED)),
+        ]),
+    ];
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(op_block("Confirm cancel", WARN))
+            .alignment(Alignment::Center),
+        popup,
+    );
 }
 
 fn render_operation_header(frame: &mut Frame, area: Rect, operation: &Operation) {

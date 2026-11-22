@@ -439,48 +439,79 @@ impl App {
                     self.handle_confirm_key(code, modifiers);
                 }
             }
-            Status::Running | Status::Cancelling => match code {
-                KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('q') => {
-                    if !self
-                        .operation
-                        .as_mut()
-                        .is_some_and(Operation::request_cancel)
+            Status::Running | Status::Cancelling => {
+                if self
+                    .operation
+                    .as_ref()
+                    .is_some_and(|operation| operation.cancel_prompt)
+                {
+                    match code {
+                        KeyCode::Enter | KeyCode::Char('y') => {
+                            self.operation.as_mut().map(Operation::request_cancel);
+                            if let Some(operation) = &mut self.operation {
+                                operation.cancel_prompt = false;
+                            }
+                        }
+                        KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
+                            if let Some(operation) = &mut self.operation {
+                                operation.cancel_prompt = false;
+                                operation.notice.clear();
+                            }
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+                match code {
+                    KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('q')
+                        if self
+                            .operation
+                            .as_ref()
+                            .is_some_and(Operation::cancel_allowed) =>
                     {
+                        if let Some(operation) = &mut self.operation {
+                            operation.cancel_prompt = true;
+                            operation.notice =
+                                "Cancel operation and clean partial files? Enter yes · Esc no"
+                                    .to_string();
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('q') => {
                         self.notice_operation("Restore in progress — cannot cancel safely");
                     }
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if let Some(operation) = &mut self.operation {
-                        operation.log_offset = operation.log_offset.saturating_add(1);
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if let Some(operation) = &mut self.operation {
+                            operation.log_offset = operation.log_offset.saturating_add(1);
+                        }
                     }
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if let Some(operation) = &mut self.operation {
-                        operation.log_offset = operation.log_offset.saturating_sub(1);
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if let Some(operation) = &mut self.operation {
+                            operation.log_offset = operation.log_offset.saturating_sub(1);
+                        }
                     }
-                }
-                KeyCode::PageUp => {
-                    if let Some(operation) = &mut self.operation {
-                        operation.log_offset = operation.log_offset.saturating_add(10);
+                    KeyCode::PageUp => {
+                        if let Some(operation) = &mut self.operation {
+                            operation.log_offset = operation.log_offset.saturating_add(10);
+                        }
                     }
-                }
-                KeyCode::PageDown => {
-                    if let Some(operation) = &mut self.operation {
-                        operation.log_offset = operation.log_offset.saturating_sub(10);
+                    KeyCode::PageDown => {
+                        if let Some(operation) = &mut self.operation {
+                            operation.log_offset = operation.log_offset.saturating_sub(10);
+                        }
                     }
-                }
-                KeyCode::Char('G') | KeyCode::End => {
-                    if let Some(operation) = &mut self.operation {
-                        operation.log_offset = 0;
+                    KeyCode::Char('G') | KeyCode::End => {
+                        if let Some(operation) = &mut self.operation {
+                            operation.log_offset = 0;
+                        }
                     }
-                }
-                KeyCode::Char('g') | KeyCode::Home => {
-                    if let Some(operation) = &mut self.operation {
-                        operation.log_offset = usize::MAX / 2;
+                    KeyCode::Char('g') | KeyCode::Home => {
+                        if let Some(operation) = &mut self.operation {
+                            operation.log_offset = usize::MAX / 2;
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             Status::Failed => match code {
                 KeyCode::Char('r') => self.retry_operation(),
                 KeyCode::Esc | KeyCode::Char('q') => self.back_to_dashboard(),
@@ -1121,6 +1152,20 @@ mod tests {
             }
         }
         assert!(!app.needs_tick());
+    }
+
+    #[test]
+    fn running_operation_asks_before_cancelling() {
+        let mut app = App::with_snapshot(snapshot());
+        app.operation = Some(test_operation(Kind::Backup));
+        app.screen = Screen::Operation;
+
+        app.handle_key(KeyCode::Esc);
+        assert!(app.operation.as_ref().unwrap().cancel_prompt);
+        assert_eq!(app.operation.as_ref().unwrap().status, Status::Running);
+
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.operation.as_ref().unwrap().status, Status::Cancelling);
     }
 
     #[test]
