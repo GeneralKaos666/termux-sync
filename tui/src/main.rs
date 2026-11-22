@@ -1,5 +1,6 @@
 mod app;
 mod data;
+mod ops;
 mod ui;
 
 use std::io::{self, IsTerminal, Write};
@@ -88,6 +89,10 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
         }
 
         if app.poll_worker() {
+            redraw = true;
+        }
+
+        if app.poll_operation() {
             redraw = true;
         }
 

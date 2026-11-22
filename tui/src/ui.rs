@@ -3,11 +3,12 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, BorderType, Cell, Clear, List, ListItem, Padding, Paragraph, Row, Table,
+    Block, BorderType, Cell, Clear, Gauge, List, ListItem, Padding, Paragraph, Row, Table, Wrap,
 };
 
-use crate::app::{ACTIONS, App, Focus};
+use crate::app::{ACTIONS, App, Focus, Screen};
 use crate::data::{backup_age, human_size, parse_log_line};
+use crate::ops::{Kind, Operation, Plan, StageState, Status};
 
 pub const MIN_WIDTH: u16 = 48;
 pub const MIN_HEIGHT: u16 = 12;
@@ -41,6 +42,13 @@ pub fn plan(area: Rect) -> LayoutPlan {
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+
+    if app.screen == Screen::Operation
+        && let Some(operation) = &app.operation
+    {
+        render_operation(frame, area, app, operation);
+        return;
+    }
 
     app.actions_area = Rect::default();
     app.backups_area = Rect::default();
@@ -86,6 +94,753 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.task.as_ref().is_some_and(|task| task.visible) {
         render_task(frame, area, app);
     }
+}
+
+fn render_operation(frame: &mut Frame, area: Rect, app: &App, operation: &Operation) {
+    let stage_height = if area.width >= 80 { 2 } else { 1 };
+    let [header, stages, body, footer] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(stage_height),
+        Constraint::Min(0),
+        Constraint::Length(2),
+    ])
+    .areas(area);
+
+    render_operation_header(frame, header, operation);
+    render_operation_stages(frame, stages, operation);
+    if operation.status == Status::AwaitingConfirm && operation.diff_open {
+        render_package_diff(frame, body, operation);
+    } else {
+        match operation.status {
+            Status::AwaitingConfirm => render_restore_plan(frame, body, operation),
+            Status::Running | Status::Cancelling => {
+                render_operation_running(frame, body, app, operation)
+            }
+            Status::Succeeded | Status::Warnings => render_operation_result(frame, body, operation),
+            Status::Failed => render_operation_failure(frame, body, operation),
+            Status::Cancelled => render_operation_cancelled(frame, body, operation),
+        }
+    }
+    render_operation_footer(frame, footer, app, operation);
+}
+
+fn render_operation_header(frame: &mut Frame, area: Rect, operation: &Operation) {
+    let (kind, color) = match operation.kind {
+        Kind::Backup => ("BACKUP", ACCENT),
+        Kind::Restore => ("RESTORE", WARN),
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(fg(color))
+        .title(Span::styled(format!(" {kind} "), fg(color).bold()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [left, right] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(9)]).areas(inner);
+    let name = if operation.name.is_empty() {
+        "preparing…".to_string()
+    } else {
+        operation.name.clone()
+    };
+    let storage = if operation.storage.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", operation.storage.to_uppercase())
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!(" {name}"), fg(SUCCESS).bold()),
+            Span::styled(storage, fg(MUTED)),
+        ])),
+        left,
+    );
+    frame.render_widget(
+        Paragraph::new(fmt_elapsed(operation.elapsed()))
+            .alignment(Alignment::Right)
+            .style(fg(MUTED)),
+        right,
+    );
+}
+
+fn render_operation_stages(frame: &mut Frame, area: Rect, operation: &Operation) {
+    if area.width < 80 {
+        let position = operation
+            .current_stage
+            .as_ref()
+            .and_then(|id| operation.stages.iter().position(|stage| &stage.id == id))
+            .map_or(0, |index| index + 1);
+        let label = operation
+            .current_stage
+            .as_ref()
+            .and_then(|id| {
+                operation
+                    .stages
+                    .iter()
+                    .find(|stage| &stage.id == id)
+                    .map(|stage| stage.label.clone())
+            })
+            .unwrap_or_else(|| "starting".to_string());
+        let line = Line::from(vec![
+            Span::styled(
+                format!(" {}/{} ", position, operation.stages.len()),
+                fg(ACCENT).bold(),
+            ),
+            Span::styled(label, fg(Color::Reset).bold()),
+            Span::raw("  "),
+            Span::styled(operation.progress_text(), fg(MUTED)),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
+
+    let mut spans = Vec::new();
+    for (index, stage) in operation.stages.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw("   "));
+        }
+        let (symbol, color) = stage_symbol(stage.state);
+        let style = if stage.state == StageState::Active {
+            fg(color).bold()
+        } else {
+            fg(color)
+        };
+        spans.push(Span::styled(format!("{symbol} "), style));
+        spans.push(Span::styled(stage.label.clone(), style));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn render_operation_running(frame: &mut Frame, area: Rect, app: &App, operation: &Operation) {
+    let [gauge_area, detail_area, log_area] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(area);
+
+    let title = if operation.protected {
+        " Progress · CANNOT CANCEL SAFELY ".to_string()
+    } else if operation.status == Status::Cancelling {
+        " Cancelling… ".to_string()
+    } else {
+        " Progress ".to_string()
+    };
+    let color = if operation.protected { WARN } else { ACCENT };
+    let gauge = Gauge::default()
+        .block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(fg(color))
+                .title(Span::styled(title, fg(color).bold())),
+        )
+        .gauge_style(fg(color))
+        .ratio(operation.overall() as f64)
+        .label(format!("{:.0}%", operation.overall() * 100.0));
+    frame.render_widget(gauge, gauge_area);
+
+    let marker = if operation.reduce_motion {
+        "·"
+    } else {
+        app.spinner().unwrap_or("·")
+    };
+    let detail = operation
+        .stage_detail
+        .as_deref()
+        .map(|detail| format!("  {detail}"))
+        .unwrap_or_default();
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!(" {marker} "), fg(color).bold()),
+            Span::styled(operation.progress_text(), fg(Color::Reset).bold()),
+            Span::styled(detail, fg(MUTED)),
+        ])),
+        detail_area,
+    );
+
+    render_operation_log(frame, log_area, operation);
+}
+
+fn render_operation_log(frame: &mut Frame, area: Rect, operation: &Operation) {
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(fg(MUTED))
+        .title(Span::styled(" Live log ", fg(MUTED)));
+    let inner_height = block.inner(area).height as usize;
+    let len = operation.logs.len();
+    let max_offset = len.saturating_sub(inner_height);
+    let offset = operation.log_offset.min(max_offset);
+    let end = len.saturating_sub(offset);
+    let start = end.saturating_sub(inner_height);
+
+    let lines: Vec<Line> = operation
+        .logs
+        .iter()
+        .skip(start)
+        .take(end - start)
+        .map(|entry| {
+            Line::from(vec![
+                level_chip(&entry.level),
+                Span::raw(" "),
+                Span::raw(entry.message.clone()),
+            ])
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+}
+
+fn render_restore_plan(frame: &mut Frame, area: Rect, operation: &Operation) {
+    let Some(plan) = &operation.plan else {
+        frame.render_widget(
+            Paragraph::new("Preparing restore plan…")
+                .block(op_block("Restore plan", WARN))
+                .style(fg(MUTED)),
+            area,
+        );
+        return;
+    };
+
+    let block = op_block("Restore plan", WARN);
+    let compact = block.inner(area).height < 9;
+    let mut lines = Vec::new();
+    let diff = diff_counts(plan);
+
+    if compact {
+        lines.push(warning_line(plan));
+        lines.push(confirm_line(operation));
+        if block.inner(area).height >= 4 {
+            lines.push(Line::from(Span::styled(
+                " d  package diff · Esc cancel",
+                fg(MUTED),
+            )));
+        }
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled(" Backup   ", fg(MUTED)),
+            Span::styled(plan.name.clone(), fg(Color::Reset).bold()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(" Date     ", fg(MUTED)),
+            Span::raw(
+                plan.date
+                    .replace('T', " ")
+                    .chars()
+                    .take(16)
+                    .collect::<String>(),
+            ),
+            Span::styled("   Label ", fg(MUTED)),
+            Span::raw(if plan.label.is_empty() {
+                "—".to_string()
+            } else {
+                plan.label.clone()
+            }),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(" Size     ", fg(MUTED)),
+            Span::raw(human_size(plan.size)),
+            Span::styled("   Storage ", fg(MUTED)),
+            Span::raw(plan.storage.to_uppercase()),
+            Span::styled("   Archives ", fg(MUTED)),
+            Span::raw(plan.archives.len().to_string()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(" Versions ", fg(MUTED)),
+            Span::raw(format!("backup {}", plan.backup_version)),
+            Span::styled("   current ", fg(MUTED)),
+            Span::raw(plan.current_version.clone()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(" Packages ", fg(MUTED)),
+            Span::styled(plan.packages.to_string(), fg(SUCCESS).bold()),
+            Span::styled(" total · ", fg(MUTED)),
+            Span::styled(
+                diff.unwrap_or_else(|| "diff unavailable".to_string()),
+                fg(MUTED),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(" Device   ", fg(MUTED)),
+            Span::styled(
+                format!(
+                    "{} device-only packages stay installed",
+                    plan.device_only.unwrap_or(0)
+                ),
+                fg(MUTED),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(" Verify   ", fg(MUTED)),
+            Span::styled(
+                if plan.checksums == "pending" {
+                    "checksums verify before extraction"
+                } else {
+                    &plan.checksums
+                },
+                fg(MUTED),
+            ),
+        ]));
+        lines.push(Line::from(""));
+        lines.push(warning_line(plan));
+        lines.push(Line::from(""));
+        lines.push(confirm_line(operation));
+        lines.push(Line::from(Span::styled(
+            " d  package diff · Esc cancel",
+            fg(MUTED),
+        )));
+    }
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_package_diff(frame: &mut Frame, area: Rect, operation: &Operation) {
+    let Some(plan) = &operation.plan else {
+        return;
+    };
+    let narrow = area.width < 60;
+    let show_filter =
+        operation.diff_filtering || !operation.diff_filter.is_empty() || area.width >= 60;
+    let warning_height = if narrow { 2 } else { 3 };
+
+    let [warning_area, tabs_area, filter_area, list_area] = if show_filter {
+        Layout::vertical([
+            Constraint::Length(warning_height),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .areas(area)
+    } else {
+        let [warning, tabs, list] = Layout::vertical([
+            Constraint::Length(warning_height),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .areas(area);
+        [warning, tabs, Rect::default(), list]
+    };
+
+    let warning = if plan.diff_available {
+        if narrow {
+            Text::from(vec![
+                Line::from(Span::styled(
+                    format!("! All {} packages reinstalled.", plan.packages),
+                    fg(WARN).bold(),
+                )),
+                Line::from(Span::styled(
+                    format!(
+                        "  {} already installed; {} device-only stay.",
+                        plan.already_installed.unwrap_or(0),
+                        plan.device_only.unwrap_or(0)
+                    ),
+                    fg(MUTED),
+                )),
+            ])
+        } else {
+            Text::from(vec![
+                Line::from(Span::styled(
+                    format!(
+                        "! Restore reinstalls all {} packages from this backup.",
+                        plan.packages
+                    ),
+                    fg(WARN).bold(),
+                )),
+                Line::from(Span::styled(
+                    format!(
+                        "  {} already-installed packages are reinstalled too.",
+                        plan.already_installed.unwrap_or(0)
+                    ),
+                    fg(WARN),
+                )),
+                Line::from(Span::styled(
+                    format!(
+                        "  {} device-only packages stay installed and are not removed.",
+                        plan.device_only.unwrap_or(0)
+                    ),
+                    fg(MUTED),
+                )),
+            ])
+        }
+    } else {
+        Text::from(vec![
+            Line::from(Span::styled(
+                format!("! Restore reinstalls all {} packages.", plan.packages),
+                fg(WARN).bold(),
+            )),
+            Line::from(Span::styled(
+                "  Current package list unavailable; diff cannot be shown.",
+                fg(WARN),
+            )),
+        ])
+    };
+    frame.render_widget(
+        Paragraph::new(warning).wrap(Wrap { trim: true }),
+        warning_area,
+    );
+
+    let categories = if narrow {
+        [
+            ("1 NEW", operation.diff.to_install.len()),
+            ("2 PRESENT", operation.diff.already_installed.len()),
+            ("3 DEVICE", operation.diff.device_only.len()),
+        ]
+    } else {
+        [
+            ("1 TO INSTALL", operation.diff.to_install.len()),
+            (
+                "2 ALREADY INSTALLED",
+                operation.diff.already_installed.len(),
+            ),
+            ("3 DEVICE ONLY", operation.diff.device_only.len()),
+        ]
+    };
+    let mut tabs = Vec::new();
+    for (index, (label, count)) in categories.iter().enumerate() {
+        if index > 0 {
+            tabs.push(Span::raw(if narrow { "  " } else { "   " }));
+        }
+        let selected = index == operation.diff_section;
+        let style = if selected {
+            fg(MAGENTA).bold()
+        } else {
+            fg(MUTED)
+        };
+        tabs.push(Span::styled(format!("{label} ({count})"), style));
+    }
+    frame.render_widget(Paragraph::new(Line::from(tabs)), tabs_area);
+
+    if show_filter {
+        let filter = if operation.diff_filtering {
+            format!("/ {}{}", operation.diff_filter, "█")
+        } else if operation.diff_filter.is_empty() {
+            " / to filter · 1/2/3 sections · Esc back".to_string()
+        } else {
+            format!(" filter: {}", operation.diff_filter)
+        };
+        frame.render_widget(Paragraph::new(filter).style(fg(MUTED)), filter_area);
+    }
+
+    let block = if list_area.height >= 6 {
+        Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(fg(MUTED))
+            .title(Span::styled(
+                if operation.diff.complete() {
+                    format!(" Packages · {} ", operation.diff.total())
+                } else {
+                    format!(" Packages · {} · partial diff ", operation.diff.total())
+                },
+                fg(MUTED),
+            ))
+    } else {
+        Block::default()
+    };
+    let inner_height = block.inner(list_area).height as usize;
+    let packages = operation.filtered_diff();
+    let len = packages.len();
+    let max_offset = len.saturating_sub(inner_height);
+    let offset = operation.diff_scroll.min(max_offset);
+    let end = len.saturating_sub(offset);
+    let start = end.saturating_sub(inner_height);
+    let lines: Vec<Line> = packages[start..end]
+        .iter()
+        .map(|package| Line::from(format!("  {package}")))
+        .collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), list_area);
+}
+
+fn render_operation_result(frame: &mut Frame, area: Rect, operation: &Operation) {
+    let Some(result) = &operation.result else {
+        return;
+    };
+    let block = op_block("Result", SUCCESS);
+    let mut lines = vec![Line::from(Span::styled(
+        if !result.ok {
+            "FAILED"
+        } else if result.warnings {
+            "COMPLETED WITH ERRORS"
+        } else {
+            "SUCCESS"
+        },
+        fg(if result.warnings || !result.ok {
+            WARN
+        } else {
+            SUCCESS
+        })
+        .bold(),
+    ))];
+    lines.push(Line::from(vec![
+        Span::styled(" Name      ", fg(MUTED)),
+        Span::styled(result.name.clone(), fg(Color::Reset).bold()),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(" Size      ", fg(MUTED)),
+        Span::raw(human_size(result.size)),
+        Span::styled("   Duration ", fg(MUTED)),
+        Span::raw(fmt_millis(result.duration_ms)),
+    ]));
+    if operation.kind == Kind::Backup {
+        let (label, color) = match result.verified {
+            Some(true) => ("VERIFIED", SUCCESS),
+            Some(false) => ("CORRUPT", DANGER),
+            None => ("SKIPPED", WARN),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(" Verify    ", fg(MUTED)),
+            Span::styled(label, fg(color).bold()),
+            Span::styled(format!("  {}", result.verify_details), fg(MUTED)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled(" Archives  ", fg(MUTED)),
+            Span::styled(
+                format!(
+                    "{}/{} extracted",
+                    result.archives.saturating_sub(result.archives_failed.len()),
+                    result.archives
+                ),
+                fg(if result.archives_failed.is_empty() {
+                    SUCCESS
+                } else {
+                    DANGER
+                }),
+            ),
+            Span::styled("   Packages ", fg(MUTED)),
+            Span::styled(
+                format!(
+                    "{}/{} installed",
+                    result.packages_installed, result.packages
+                ),
+                fg(if result.packages_failed.is_empty() {
+                    SUCCESS
+                } else {
+                    WARN
+                }),
+            ),
+        ]));
+        for package in result.packages_failed.iter().take(4) {
+            lines.push(Line::from(Span::styled(
+                format!("   package failed: {package}"),
+                fg(DANGER),
+            )));
+        }
+        for archive in result.archives_failed.iter().take(4) {
+            lines.push(Line::from(Span::styled(
+                format!("   archive failed: {archive}"),
+                fg(DANGER),
+            )));
+        }
+    }
+    if result.restart_required {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Close and reopen Termux to use the restored environment.",
+            fg(WARN).bold(),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(" Esc  dashboard", fg(MUTED))));
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_operation_failure(frame: &mut Frame, area: Rect, operation: &Operation) {
+    let block = op_block("Failed", DANGER);
+    let mut lines = vec![Line::from(Span::styled(
+        "✕ OPERATION FAILED",
+        fg(DANGER).bold(),
+    ))];
+    if let Some(error) = &operation.error {
+        lines.push(Line::from(Span::styled(
+            error.message.clone(),
+            fg(Color::Reset),
+        )));
+        if !error.hint.is_empty() {
+            lines.push(Line::from(Span::styled(error.hint.clone(), fg(MUTED))));
+        }
+        if let Some(code) = error.exit_code {
+            lines.push(Line::from(Span::styled(
+                format!("exit code {code}"),
+                fg(MUTED),
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " r  retry    Esc  dashboard",
+        fg(MUTED),
+    )));
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_operation_cancelled(frame: &mut Frame, area: Rect, operation: &Operation) {
+    let block = op_block("Cancelled", WARN);
+    let mut lines = vec![Line::from(Span::styled(
+        "Operation cancelled.",
+        fg(WARN).bold(),
+    ))];
+    if !operation.notice.is_empty() {
+        lines.push(Line::from(Span::styled(
+            operation.notice.clone(),
+            fg(MUTED),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(" Esc  dashboard", fg(MUTED))));
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_operation_footer(frame: &mut Frame, area: Rect, app: &App, operation: &Operation) {
+    let marker = if operation.reduce_motion {
+        "●"
+    } else {
+        app.spinner().unwrap_or("●")
+    };
+    let color = if operation.status == Status::Failed {
+        DANGER
+    } else if operation.status == Status::Succeeded {
+        SUCCESS
+    } else if operation.status == Status::Warnings
+        || operation.status == Status::Cancelled
+        || operation.protected
+    {
+        WARN
+    } else {
+        ACCENT
+    };
+    let status = if operation.notice.is_empty() {
+        status_text(operation)
+    } else {
+        operation.notice.clone()
+    };
+    let line1 = Line::from(vec![
+        Span::styled(format!(" {marker} "), fg(color).bold()),
+        Span::styled(status, fg(color)),
+    ]);
+
+    let hints = match operation.status {
+        Status::AwaitingConfirm => "Type RESTORE · Enter confirm · d diff · Esc cancel",
+        Status::Running if operation.protected => "CANNOT CANCEL · ↑↓ log",
+        Status::Running => "Esc cancel · ↑↓ log · G end",
+        Status::Cancelling => "waiting for process to exit…",
+        Status::Failed => "r retry · Esc dashboard",
+        Status::Succeeded | Status::Warnings | Status::Cancelled => "Esc dashboard",
+    };
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            line1,
+            Line::from(Span::styled(hints, fg(MUTED))),
+        ])),
+        area,
+    );
+}
+
+fn op_block(title: &str, color: Color) -> Block<'static> {
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(fg(color))
+        .title(Span::styled(format!(" {title} "), fg(color).bold()))
+        .padding(Padding::horizontal(1))
+}
+
+fn stage_symbol(state: StageState) -> (&'static str, Color) {
+    match state {
+        StageState::Pending => ("·", MUTED),
+        StageState::Active => ("▸", ACCENT),
+        StageState::Complete => ("✓", SUCCESS),
+        StageState::Failed => ("✕", DANGER),
+        StageState::Skipped => ("–", MUTED),
+    }
+}
+
+fn status_text(operation: &Operation) -> String {
+    match operation.status {
+        Status::Running => format!("{} running", kind_label(operation.kind)),
+        Status::AwaitingConfirm => "restore plan ready".to_string(),
+        Status::Cancelling => "cancelling and cleaning up".to_string(),
+        Status::Succeeded => format!("{} complete", kind_label(operation.kind)),
+        Status::Warnings => "completed with errors".to_string(),
+        Status::Failed => "operation failed".to_string(),
+        Status::Cancelled => "cancelled".to_string(),
+    }
+}
+
+fn kind_label(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Backup => "backup",
+        Kind::Restore => "restore",
+    }
+}
+
+fn warning_line(plan: &Plan) -> Line<'static> {
+    if plan.diff_available {
+        Line::from(Span::styled(
+            format!(
+                "! Reinstalls all {} packages; {} already installed.",
+                plan.packages,
+                plan.already_installed.unwrap_or(0)
+            ),
+            fg(WARN).bold(),
+        ))
+    } else {
+        Line::from(Span::styled(
+            format!(
+                "! Reinstalls all {} packages. Current package list unavailable.",
+                plan.packages
+            ),
+            fg(WARN).bold(),
+        ))
+    }
+}
+
+fn confirm_line(operation: &Operation) -> Line<'static> {
+    let ready = operation.confirm_text.trim() == "RESTORE";
+    Line::from(vec![
+        Span::styled(" Type RESTORE to continue: ", fg(MUTED)),
+        Span::styled(
+            format!("{}{}", operation.confirm_text, "█"),
+            if ready {
+                fg(SUCCESS).bold()
+            } else {
+                fg(ACCENT)
+            },
+        ),
+    ])
+}
+
+fn diff_counts(plan: &Plan) -> Option<String> {
+    Some(format!(
+        "{} to install · {} already · {} device-only",
+        plan.to_install?, plan.already_installed?, plan.device_only?
+    ))
+}
+
+fn fmt_elapsed(duration: std::time::Duration) -> String {
+    let seconds = duration.as_secs();
+    format!("{:02}:{:02}", seconds / 60, seconds % 60)
+}
+
+fn fmt_millis(millis: u64) -> String {
+    fmt_elapsed(std::time::Duration::from_millis(millis))
 }
 
 fn render_hero(frame: &mut Frame, area: Rect, app: &App) {
@@ -766,6 +1521,7 @@ fn pane_block(title: &str, detail: Option<&str>, focused: bool, color: Color) ->
 mod tests {
     use super::*;
     use crate::data::{Backup, Config, Snapshot};
+    use crate::ops::{Kind, Outcome, Status, test_operation, test_plan};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::KeyCode;
@@ -970,6 +1726,101 @@ mod tests {
         assert!(frame.contains("Backups"));
         assert!(frame.contains("Output"));
         assert!(frame.contains("ACTIONS"));
+    }
+
+    fn operation_app(kind: Kind, status: Status) -> App {
+        let mut app = app();
+        let mut operation = test_operation(kind);
+        operation.status = status;
+        operation.plan = Some(test_plan());
+        operation
+            .diff
+            .apply("to_install", 1, 1, vec!["pkg-a".into(), "pkg-b".into()]);
+        operation.diff.apply(
+            "already_installed",
+            1,
+            1,
+            vec!["git".into(), "python".into()],
+        );
+        operation
+            .diff
+            .apply("device_only", 1, 1, vec!["vim".into()]);
+        app.operation = Some(operation);
+        app.screen = crate::app::Screen::Operation;
+        app
+    }
+
+    fn render_app(app: &mut App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, app))
+            .expect("draw succeeds");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn restore_plan_screen_shows_warning_and_input() {
+        let mut app = operation_app(Kind::Restore, Status::AwaitingConfirm);
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("Restore plan"));
+        assert!(frame.contains("Type RESTORE"));
+        assert!(frame.contains("Reinstalls all 1947 packages"));
+        assert!(frame.contains("1827 already installed"));
+    }
+
+    #[test]
+    fn restore_plan_fits_minimum_with_warning() {
+        let mut app = operation_app(Kind::Restore, Status::AwaitingConfirm);
+        let frame = render_app(&mut app, 48, 12);
+        assert!(frame.contains("Reinstalls all 1947"));
+        assert!(frame.contains("Type RESTORE"));
+    }
+
+    #[test]
+    fn package_diff_screen_has_persistent_warning() {
+        let mut app = operation_app(Kind::Restore, Status::AwaitingConfirm);
+        app.operation.as_mut().unwrap().diff_open = true;
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("reinstalls all 1947 packages"));
+        assert!(frame.contains("device-only"));
+        assert!(frame.contains("TO INSTALL"));
+        assert!(frame.contains("DEVICE ONLY"));
+        assert!(frame.contains("pkg-a"));
+    }
+
+    #[test]
+    fn protected_restore_screen_says_no_cancel() {
+        let mut app = operation_app(Kind::Restore, Status::Running);
+        app.operation.as_mut().unwrap().protected = true;
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("CANNOT CANCEL SAFELY"));
+        assert!(frame.contains("CANNOT CANCEL"));
+    }
+
+    #[test]
+    fn restore_result_requires_manual_restart() {
+        let mut app = operation_app(Kind::Restore, Status::Succeeded);
+        app.operation.as_mut().unwrap().result = Some(Outcome {
+            ok: true,
+            name: "termux_backup_test".to_string(),
+            size: 22_300_000_000,
+            packages: 1947,
+            packages_installed: 1947,
+            archives: 2,
+            restart_required: true,
+            duration_ms: 3_100,
+            ..Outcome::default()
+        });
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("SUCCESS"));
+        assert!(frame.contains("Close and reopen Termux"));
     }
 
     #[test]

@@ -5,7 +5,8 @@ spike on branch `spike/rust-tui`, not part of the released Python package.
 
 It never reimplements backup logic. Read-only views come from
 `~/.config/termux-sync/config.json`, local `manifest.json` files, and
-`sync.log`. Interactive commands hand the terminal to `termux-sync`.
+`sync.log`. Backup and restore run through the Python event protocol; setup,
+schedule, delete and clear-cache still hand the terminal to `termux-sync`.
 
 ## What it shows
 
@@ -20,6 +21,15 @@ It never reimplements backup logic. Read-only views come from
   pane title.
 - Output pane: scrollable log tail and captured command output, with dimmed
   dates and INFO / WARNING / ERROR chips.
+- Operations cockpit: backup streams stages, progress and logs inside the TUI.
+  Restore first shows a plan, package diff and type-to-confirm gate, then
+  streams download, verification, extraction and package reinstall.
+- Restore safety: checksums must pass before extraction. Cancel is allowed
+  only during metadata, download and verification. After extraction starts,
+  cancel is refused and the screen says so.
+- Package diff: `d` from the restore plan opens `TO INSTALL`,
+  `ALREADY INSTALLED` and `DEVICE ONLY` sections with a persistent warning
+  that every backup package is reinstalled.
 - Motion: help text reveals at a fixed size in about 200ms. Captured commands
   show a WORKING card only when they run longer than 150ms, hold DONE for
   150ms, then reveal output. Pane changes and output updates are instant.
@@ -66,6 +76,18 @@ Disable motion with `--no-anim` or `TERMUX_SYNC_TUI_REDUCED_MOTION=1`.
 | `Ctrl+C` | quit immediately, even during a task |
 | `q` | quit |
 
+Operation keys:
+
+| Key | Action |
+|---|---|
+| `Esc` / `c` | cancel while allowed; otherwise explain why not |
+| `d` | open package diff on the restore plan |
+| `1` / `2` / `3` | jump diff sections |
+| `/` | filter the current diff section |
+| `r` | retry a failed operation |
+| `↑` / `↓`, `PgUp` / `PgDn`, `G` | scroll logs or diff |
+| type `RESTORE`, then `Enter` | confirm a restore |
+
 Mouse: click an action to run it, click a backup row to select it, click a pane
 to focus it. Mouse capture disables terminal text selection; hold Shift to
 select text in most terminals.
@@ -91,5 +113,6 @@ select text in most terminals.
 - Remote storage (Google Drive, GitHub) shows no backup list; use the List
   action, which captures `termux-sync list` output.
 - Backup labels cannot be typed in the TUI yet.
-- Interactive commands block the dashboard while they own the terminal, by
-  design.
+- Restore cannot be cancelled after extraction starts.
+- Setup, schedule, delete and clear-cache still hand over the terminal.
+- The operations protocol is version 1 and backup/restore only.

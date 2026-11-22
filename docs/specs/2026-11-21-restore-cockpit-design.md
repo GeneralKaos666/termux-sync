@@ -1,7 +1,7 @@
 # Restore Cockpit — Design
 
 Date: 2026-11-21
-Status: Draft for review
+Status: Approved for implementation
 Branch: `spike/rust-tui`
 Depends on: `docs/specs/2026-11-21-operations-cockpit-design.md`
 

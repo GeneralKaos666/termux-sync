@@ -5,6 +5,13 @@ use ratatui::layout::{Position, Rect};
 use ratatui::widgets::{ListState, TableState};
 
 use crate::data::{self, Backup, Snapshot};
+use crate::ops::{Kind, Operation, Status};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    Dashboard,
+    Operation,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -209,6 +216,10 @@ pub struct App {
     pub loading: bool,
     pub help_scroll: usize,
     pub reduce_motion: bool,
+    pub screen: Screen,
+    pub operation: Option<Operation>,
+    pub op_result_handled: bool,
+    pub pending_select: Option<String>,
     pub actions_area: Rect,
     pub backups_area: Rect,
     pub output_area: Rect,
@@ -255,6 +266,10 @@ impl App {
             loading: false,
             help_scroll: 0,
             reduce_motion: false,
+            screen: Screen::Dashboard,
+            operation: None,
+            op_result_handled: false,
+            pending_select: None,
             actions_area: Rect::default(),
             backups_area: Rect::default(),
             output_area: Rect::default(),
@@ -284,7 +299,13 @@ impl App {
     }
 
     pub fn needs_tick(&self) -> bool {
-        self.worker.is_busy() || self.task.is_some() || self.help_progress() < 1.0
+        self.worker.is_busy()
+            || self.task.is_some()
+            || self.help_progress() < 1.0
+            || self
+                .operation
+                .as_ref()
+                .is_some_and(|operation| operation.is_running())
     }
 
     pub fn on_tick(&mut self) {
@@ -306,7 +327,13 @@ impl App {
     }
 
     pub fn spinner(&self) -> Option<&'static str> {
-        if !self.worker.is_busy() && self.pending.is_none() {
+        if !self.worker.is_busy()
+            && self.pending.is_none()
+            && !self
+                .operation
+                .as_ref()
+                .is_some_and(|operation| operation.is_running())
+        {
             return None;
         }
         const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -329,6 +356,11 @@ impl App {
     }
 
     fn handle_key_with(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        if self.operation.is_some() {
+            self.handle_operation_key(code, modifiers);
+            return;
+        }
+
         if modifiers.contains(KeyModifiers::CONTROL)
             && matches!(code, KeyCode::Char('c') | KeyCode::Char('C'))
         {
@@ -375,7 +407,263 @@ impl App {
         self.focus = focus;
     }
 
+    fn handle_operation_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        let ctrl_c = modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Char('c') | KeyCode::Char('C'));
+        let Some((status, is_done, diff_open)) = self
+            .operation
+            .as_ref()
+            .map(|operation| (operation.status, operation.is_done(), operation.diff_open))
+        else {
+            return;
+        };
+
+        if ctrl_c {
+            if is_done {
+                self.should_quit = true;
+            } else if !self
+                .operation
+                .as_mut()
+                .is_some_and(Operation::request_cancel)
+            {
+                self.notice_operation("Restore in progress — cannot cancel safely");
+            }
+            return;
+        }
+
+        match status {
+            Status::AwaitingConfirm => {
+                if diff_open {
+                    self.handle_diff_key(code, modifiers);
+                } else {
+                    self.handle_confirm_key(code, modifiers);
+                }
+            }
+            Status::Running | Status::Cancelling => match code {
+                KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('q') => {
+                    if !self
+                        .operation
+                        .as_mut()
+                        .is_some_and(Operation::request_cancel)
+                    {
+                        self.notice_operation("Restore in progress — cannot cancel safely");
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let Some(operation) = &mut self.operation {
+                        operation.log_offset = operation.log_offset.saturating_add(1);
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let Some(operation) = &mut self.operation {
+                        operation.log_offset = operation.log_offset.saturating_sub(1);
+                    }
+                }
+                KeyCode::PageUp => {
+                    if let Some(operation) = &mut self.operation {
+                        operation.log_offset = operation.log_offset.saturating_add(10);
+                    }
+                }
+                KeyCode::PageDown => {
+                    if let Some(operation) = &mut self.operation {
+                        operation.log_offset = operation.log_offset.saturating_sub(10);
+                    }
+                }
+                KeyCode::Char('G') | KeyCode::End => {
+                    if let Some(operation) = &mut self.operation {
+                        operation.log_offset = 0;
+                    }
+                }
+                KeyCode::Char('g') | KeyCode::Home => {
+                    if let Some(operation) = &mut self.operation {
+                        operation.log_offset = usize::MAX / 2;
+                    }
+                }
+                _ => {}
+            },
+            Status::Failed => match code {
+                KeyCode::Char('r') => self.retry_operation(),
+                KeyCode::Esc | KeyCode::Char('q') => self.back_to_dashboard(),
+                _ => {}
+            },
+            Status::Succeeded | Status::Warnings | Status::Cancelled => match code {
+                KeyCode::Esc | KeyCode::Char('q') => self.back_to_dashboard(),
+                _ => {}
+            },
+        }
+    }
+
+    fn handle_confirm_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        let plain = !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let Some(operation) = &mut self.operation else {
+            return;
+        };
+        match code {
+            KeyCode::Enter => {
+                if operation.confirm_text.trim() == "RESTORE" {
+                    if operation.confirm_restore() {
+                        operation.confirm_text.clear();
+                        operation.notice.clear();
+                    }
+                } else {
+                    operation.notice = "Type RESTORE exactly to continue".to_string();
+                }
+            }
+            KeyCode::Backspace => {
+                operation.confirm_text.pop();
+            }
+            KeyCode::Esc => {
+                operation.request_cancel();
+            }
+            KeyCode::Char('d') if plain => {
+                operation.diff_open = true;
+                operation.diff_scroll = 0;
+            }
+            KeyCode::Char(ch) if plain && !ch.is_control() && operation.confirm_text.len() < 32 => {
+                operation.confirm_text.push(ch);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_diff_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        let plain = !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let Some(operation) = &mut self.operation else {
+            return;
+        };
+        if operation.diff_filtering {
+            match code {
+                KeyCode::Esc | KeyCode::Enter => operation.diff_filtering = false,
+                KeyCode::Backspace => {
+                    operation.diff_filter.pop();
+                }
+                KeyCode::Char(ch) if plain && !ch.is_control() => operation.diff_filter.push(ch),
+                _ => {}
+            }
+            operation.diff_scroll = 0;
+            return;
+        }
+        match code {
+            KeyCode::Esc => {
+                operation.diff_open = false;
+                operation.diff_filtering = false;
+            }
+            KeyCode::Char('d') if plain => {
+                operation.diff_open = false;
+                operation.diff_filtering = false;
+            }
+            KeyCode::Char('/') => {
+                operation.diff_filtering = true;
+                operation.diff_filter.clear();
+                operation.diff_scroll = 0;
+            }
+            KeyCode::Char('1') => {
+                operation.diff_section = 0;
+                operation.diff_scroll = 0;
+            }
+            KeyCode::Char('2') => {
+                operation.diff_section = 1;
+                operation.diff_scroll = 0;
+            }
+            KeyCode::Char('3') => {
+                operation.diff_section = 2;
+                operation.diff_scroll = 0;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                operation.diff_scroll = operation.diff_scroll.saturating_add(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                operation.diff_scroll = operation.diff_scroll.saturating_sub(1)
+            }
+            KeyCode::PageUp => operation.diff_scroll = operation.diff_scroll.saturating_add(10),
+            KeyCode::PageDown => operation.diff_scroll = operation.diff_scroll.saturating_sub(10),
+            KeyCode::Char('G') | KeyCode::End => operation.diff_scroll = 0,
+            KeyCode::Char('g') | KeyCode::Home => operation.diff_scroll = usize::MAX / 2,
+            _ => {}
+        }
+    }
+
+    fn notice_operation(&mut self, message: &str) {
+        if let Some(operation) = &mut self.operation {
+            operation.notice = message.to_string();
+        }
+    }
+
+    fn start_operation(&mut self, kind: Kind, name: &str, args: Vec<String>) {
+        match Operation::start(kind, name, args, self.reduce_motion) {
+            Ok(operation) => {
+                self.operation = Some(operation);
+                self.screen = Screen::Operation;
+                self.op_result_handled = false;
+                self.status = match kind {
+                    Kind::Backup => "backup running".to_string(),
+                    Kind::Restore => "restore plan".to_string(),
+                };
+            }
+            Err(error) => {
+                self.status = format!("cannot start termux-sync: {error}");
+            }
+        }
+    }
+
+    fn retry_operation(&mut self) {
+        let retry = self
+            .operation
+            .as_ref()
+            .map(|operation| (operation.kind, operation.retry_args()));
+        if let Some((kind, args)) = retry {
+            let name = self
+                .operation
+                .as_ref()
+                .map(|operation| operation.name.clone())
+                .unwrap_or_default();
+            self.start_operation(kind, &name, args);
+        }
+    }
+
+    fn back_to_dashboard(&mut self) {
+        self.operation = None;
+        self.screen = Screen::Dashboard;
+        self.op_result_handled = false;
+    }
+
+    pub fn poll_operation(&mut self) -> bool {
+        let Some(operation) = &mut self.operation else {
+            return false;
+        };
+        let changed = operation.poll();
+        let finished = operation.is_done() && !self.op_result_handled;
+        let success_name =
+            if finished && matches!(operation.status, Status::Succeeded | Status::Warnings) {
+                Some(if operation.name.is_empty() {
+                    operation
+                        .result
+                        .as_ref()
+                        .map(|result| result.name.clone())
+                        .unwrap_or_default()
+                } else {
+                    operation.name.clone()
+                })
+            } else {
+                None
+            };
+
+        if finished {
+            self.op_result_handled = true;
+        }
+        if let Some(name) = success_name {
+            if !name.is_empty() {
+                self.pending_select = Some(name);
+            }
+            self.refresh();
+        }
+        changed
+    }
+
     pub fn handle_mouse(&mut self, column: u16, row: u16) {
+        if self.operation.is_some() {
+            return;
+        }
         if self.pending.is_some() || self.task.is_some() || self.show_help {
             return;
         }
@@ -480,10 +768,13 @@ impl App {
 
     pub fn run(&mut self, action: Action) {
         match action {
-            Action::Backup => self.queue_command(vec!["backup"]),
+            Action::Backup => {
+                self.start_operation(Kind::Backup, "backup", vec!["backup".to_string()])
+            }
             Action::Restore => {
                 if let Some(name) = self.selected_backup().map(|backup| backup.name.clone()) {
-                    self.queue_command(vec!["restore", "--name", &name]);
+                    let args = restore_command(&name);
+                    self.start_operation(Kind::Restore, &name, args);
                 } else {
                     self.status = "no backup selected".to_string();
                 }
@@ -581,7 +872,10 @@ impl App {
     }
 
     pub fn apply_snapshot(&mut self, snapshot: Snapshot) {
-        let selected_name = self.selected_backup().map(|backup| backup.name.clone());
+        let selected_name = self
+            .pending_select
+            .take()
+            .or_else(|| self.selected_backup().map(|backup| backup.name.clone()));
 
         self.loading = false;
         self.status = snapshot
@@ -608,6 +902,14 @@ impl App {
     }
 }
 
+pub fn restore_command(name: &str) -> Vec<String> {
+    vec![
+        "restore".to_string(),
+        "--name".to_string(),
+        name.to_string(),
+    ]
+}
+
 fn progress(tick: u64, start: u64, ticks: u64) -> f32 {
     if ticks == 0 {
         1.0
@@ -620,6 +922,7 @@ fn progress(tick: u64, start: u64, ticks: u64) -> f32 {
 mod tests {
     use super::*;
     use crate::data::Config;
+    use crate::ops::{Kind, Status, test_operation, test_plan};
 
     fn snapshot() -> Snapshot {
         Snapshot {
@@ -671,18 +974,14 @@ mod tests {
     }
 
     #[test]
-    fn restore_uses_selected_backup_name() {
-        let mut app = App::with_snapshot(snapshot());
-        app.handle_key(KeyCode::Tab);
-        app.handle_key(KeyCode::Down);
-        app.handle_key(KeyCode::Enter);
+    fn restore_command_uses_backup_name() {
         assert_eq!(
-            app.pending,
-            Some(vec![
+            restore_command("backup-two"),
+            vec![
                 "restore".to_string(),
                 "--name".to_string(),
                 "backup-two".to_string()
-            ])
+            ]
         );
     }
 
@@ -728,8 +1027,8 @@ mod tests {
     #[test]
     fn handoff_is_queued_without_waiting() {
         let mut app = App::with_snapshot(snapshot());
-        app.run(Action::Backup);
-        assert_eq!(app.pending, Some(vec!["backup".to_string()]));
+        app.run(Action::Setup);
+        assert_eq!(app.pending, Some(vec!["setup".to_string()]));
     }
 
     #[test]
@@ -793,7 +1092,7 @@ mod tests {
     #[test]
     fn ctrl_c_quits_even_with_pending_command() {
         let mut app = App::with_snapshot(snapshot());
-        app.run(Action::Backup);
+        app.run(Action::Setup);
         assert!(app.pending.is_some());
         app.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(app.should_quit);
@@ -822,6 +1121,65 @@ mod tests {
             }
         }
         assert!(!app.needs_tick());
+    }
+
+    #[test]
+    fn restore_plan_requires_typed_confirmation() {
+        let mut app = App::with_snapshot(snapshot());
+        let mut operation = test_operation(Kind::Restore);
+        operation.status = Status::AwaitingConfirm;
+        operation.plan = Some(test_plan());
+        app.operation = Some(operation);
+        app.screen = Screen::Operation;
+
+        for ch in "RESTORE".chars() {
+            app.handle_key(KeyCode::Char(ch));
+        }
+        let operation = app.operation.as_ref().unwrap();
+        assert_eq!(operation.confirm_text, "RESTORE");
+
+        app.handle_key(KeyCode::Enter);
+        let operation = app.operation.as_ref().unwrap();
+        assert!(operation.notice.contains("cannot write confirmation"));
+    }
+
+    #[test]
+    fn protected_restore_refuses_cancel() {
+        let mut app = App::with_snapshot(snapshot());
+        let mut operation = test_operation(Kind::Restore);
+        operation.protected = true;
+        app.operation = Some(operation);
+        app.screen = Screen::Operation;
+
+        app.handle_key(KeyCode::Esc);
+        let operation = app.operation.as_ref().unwrap();
+        assert_eq!(operation.status, Status::Running);
+        assert!(operation.notice.contains("cannot cancel"));
+    }
+
+    #[test]
+    fn package_diff_filter_narrows_the_list() {
+        let mut app = App::with_snapshot(snapshot());
+        let mut operation = test_operation(Kind::Restore);
+        operation.status = Status::AwaitingConfirm;
+        operation.plan = Some(test_plan());
+        operation
+            .diff
+            .apply("to_install", 1, 1, vec!["git".into(), "python".into()]);
+        operation.diff.apply("already_installed", 1, 1, Vec::new());
+        operation.diff.apply("device_only", 1, 1, Vec::new());
+        app.operation = Some(operation);
+        app.screen = Screen::Operation;
+
+        app.handle_key(KeyCode::Char('d'));
+        app.handle_key(KeyCode::Char('/'));
+        for ch in "git".chars() {
+            app.handle_key(KeyCode::Char(ch));
+        }
+        let operation = app.operation.as_ref().unwrap();
+        assert!(operation.diff_open);
+        assert!(operation.diff_filtering);
+        assert_eq!(operation.filtered_diff(), vec!["git".to_string()]);
     }
 
     #[test]

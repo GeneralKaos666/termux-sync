@@ -1378,6 +1378,7 @@ dependencies = [
 name = "termux-sync-tui"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "ratatui",
  "serde_json",
 ]
