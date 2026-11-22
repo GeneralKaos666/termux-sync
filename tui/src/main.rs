@@ -17,7 +17,7 @@ use ratatui::crossterm::terminal::{Clear, ClearType, EnterAlternateScreen, enabl
 use crate::app::App;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const FRAME_TIME: Duration = Duration::from_millis(100);
+const FRAME_TIME: Duration = Duration::from_millis(50);
 const IDLE_TIME: Duration = Duration::from_millis(1_000);
 
 fn main() -> io::Result<()> {
@@ -49,7 +49,11 @@ fn main() -> io::Result<()> {
 }
 
 fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
+    let reduce_motion = std::env::var_os("TERMUX_SYNC_TUI_REDUCED_MOTION")
+        .is_some_and(|value| !value.is_empty())
+        || std::env::args().any(|arg| arg == "--no-anim");
     let mut app = App::new();
+    app.reduce_motion = reduce_motion;
     let mut redraw = true;
 
     loop {
@@ -91,9 +95,7 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
             break;
         }
 
-        if app.pending_ready()
-            && let Some(argv) = app.pending.take()
-        {
+        if let Some(argv) = app.pending.take() {
             handoff(terminal, &mut app, &argv)?;
             redraw = true;
         }
@@ -165,7 +167,11 @@ Keys:
   q          quit
   Ctrl+C     quit immediately
 
+Options:
+  --no-anim  disable motion (also TERMUX_SYNC_TUI_REDUCED_MOTION=1)
+
 Environment:
-  TERMUX_SYNC_BIN   termux-sync executable to run (default: termux-sync)"
+  TERMUX_SYNC_BIN                 termux-sync executable (default: termux-sync)
+  TERMUX_SYNC_TUI_REDUCED_MOTION  disable motion when non-empty"
     );
 }

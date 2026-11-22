@@ -145,6 +145,7 @@ pub struct TaskOverlay {
     pub started_at: u64,
     pub done: bool,
     pub done_at: u64,
+    pub visible: bool,
 }
 
 impl Worker {
@@ -204,13 +205,10 @@ pub struct App {
     pub worker: Worker,
     pub tick: u64,
     pub help_opened_at: u64,
-    pub pane_changed_at: u64,
-    pub pane_dir: i8,
-    pub pending_since: u64,
     pub task: Option<TaskOverlay>,
-    pub output_shown_at: u64,
     pub loading: bool,
     pub help_scroll: usize,
+    pub reduce_motion: bool,
     pub actions_area: Rect,
     pub backups_area: Rect,
     pub output_area: Rect,
@@ -253,13 +251,10 @@ impl App {
             worker: Worker::default(),
             tick: 0,
             help_opened_at: 0,
-            pane_changed_at: 0,
-            pane_dir: 1,
-            pending_since: 0,
             task: None,
-            output_shown_at: 0,
             loading: false,
             help_scroll: 0,
+            reduce_motion: false,
             actions_area: Rect::default(),
             backups_area: Rect::default(),
             output_area: Rect::default(),
@@ -273,54 +268,41 @@ impl App {
     }
 
     pub fn help_progress(&self) -> f32 {
-        if !self.show_help {
+        if !self.show_help || self.reduce_motion {
             return 1.0;
         }
-        progress(self.tick, self.help_opened_at, 5)
-    }
-
-    pub fn pane_progress(&self) -> f32 {
-        progress(self.tick, self.pane_changed_at, 4)
-    }
-
-    pub fn launch_progress(&self) -> f32 {
-        progress(self.tick, self.pending_since, 5)
-    }
-
-    pub fn pending_ready(&self) -> bool {
-        self.pending.is_some() && self.launch_progress() >= 1.0
-    }
-
-    pub fn on_tick(&mut self) {
-        self.tick = self.tick.wrapping_add(1);
-        if self
-            .task
-            .as_ref()
-            .is_some_and(|task| task.done && self.tick.saturating_sub(task.done_at) >= 5)
-        {
-            self.task = None;
-            self.output_shown_at = self.tick;
-        }
+        progress(self.tick, self.help_opened_at, 4)
     }
 
     pub fn task_progress(&self) -> f32 {
         match &self.task {
-            Some(task) => progress(self.tick, task.started_at, 5),
-            None => 1.0,
+            Some(task) if !self.reduce_motion => {
+                progress(self.tick, task.started_at.saturating_add(3), 2)
+            }
+            _ => 1.0,
         }
     }
 
-    pub fn output_progress(&self) -> f32 {
-        progress(self.tick, self.output_shown_at, 4)
+    pub fn needs_tick(&self) -> bool {
+        self.worker.is_busy() || self.task.is_some() || self.help_progress() < 1.0
     }
 
-    pub fn needs_tick(&self) -> bool {
-        self.worker.is_busy()
-            || self.pending.is_some()
-            || self.task.is_some()
-            || self.help_progress() < 1.0
-            || self.pane_progress() < 1.0
-            || self.output_progress() < 1.0
+    pub fn on_tick(&mut self) {
+        self.tick = self.tick.wrapping_add(1);
+        let now = self.tick;
+        let mut remove = false;
+
+        if let Some(task) = &mut self.task {
+            if !task.visible && now.saturating_sub(task.started_at) >= 3 {
+                task.visible = true;
+            }
+            if task.done && now.saturating_sub(task.done_at) >= 3 {
+                remove = true;
+            }
+        }
+        if remove {
+            self.task = None;
+        }
     }
 
     pub fn spinner(&self) -> Option<&'static str> {
@@ -378,8 +360,8 @@ impl App {
         match code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.open_help(),
-            KeyCode::Tab => self.switch_focus(self.focus.next(), 1),
-            KeyCode::BackTab => self.switch_focus(self.focus.previous(), -1),
+            KeyCode::Tab => self.switch_focus(self.focus.next()),
+            KeyCode::BackTab => self.switch_focus(self.focus.previous()),
             KeyCode::Char('R') => self.refresh(),
             _ => match self.focus {
                 Focus::Actions => self.handle_actions_key(code),
@@ -389,12 +371,8 @@ impl App {
         }
     }
 
-    fn switch_focus(&mut self, focus: Focus, direction: i8) {
-        if focus != self.focus {
-            self.focus = focus;
-            self.pane_changed_at = self.tick;
-            self.pane_dir = direction;
-        }
+    fn switch_focus(&mut self, focus: Focus) {
+        self.focus = focus;
     }
 
     pub fn handle_mouse(&mut self, column: u16, row: u16) {
@@ -414,17 +392,17 @@ impl App {
                 let index = (row - first_row) as usize + self.action_state.offset();
                 if index < ACTIONS.len() {
                     self.action_state.select(Some(index));
-                    self.switch_focus(Focus::Actions, -1);
+                    self.switch_focus(Focus::Actions);
                     self.run(ACTIONS[index].action);
                 }
             } else {
-                self.switch_focus(Focus::Actions, -1);
+                self.switch_focus(Focus::Actions);
             }
             return;
         }
 
         if self.backups_area.contains(point) {
-            self.switch_focus(Focus::Backups, 1);
+            self.switch_focus(Focus::Backups);
             let first_data = self.backups_area.y.saturating_add(2);
             if row >= first_data {
                 let index = (row - first_data) as usize + self.backup_state.offset();
@@ -436,7 +414,7 @@ impl App {
         }
 
         if self.output_area.contains(point) {
-            self.switch_focus(Focus::Output, 1);
+            self.switch_focus(Focus::Output);
         }
     }
 
@@ -521,8 +499,7 @@ impl App {
             Action::Logs => {
                 self.output = data::tail_log(200);
                 self.output_offset = 0;
-                self.output_shown_at = self.tick;
-                self.switch_focus(Focus::Output, 1);
+                self.switch_focus(Focus::Output);
                 self.status = "showing sync.log".to_string();
             }
             Action::DiskCheck => {
@@ -540,7 +517,6 @@ impl App {
     fn queue_command(&mut self, args: Vec<&str>) {
         let argv: Vec<String> = args.into_iter().map(str::to_string).collect();
         self.status = format!("running termux-sync {}", argv.join(" "));
-        self.pending_since = self.tick;
         self.pending = Some(argv);
     }
 
@@ -562,6 +538,7 @@ impl App {
                     started_at: self.tick,
                     done: false,
                     done_at: 0,
+                    visible: false,
                 });
             }
         }
@@ -575,7 +552,10 @@ impl App {
         let Some(result) = self.worker.poll() else {
             return false;
         };
-        if let Some(task) = &mut self.task {
+        let hide_fast_task = self.task.as_ref().is_some_and(|task| !task.visible);
+        if hide_fast_task {
+            self.task = None;
+        } else if let Some(task) = &mut self.task {
             task.done = true;
             task.done_at = self.tick;
         }
@@ -586,14 +566,14 @@ impl App {
                 self.output.push(format!("$ termux-sync {title}"));
                 self.output.extend(text.lines().map(str::to_string));
                 self.output_offset = 0;
-                self.switch_focus(Focus::Output, 1);
+                self.switch_focus(Focus::Output);
                 self.status = format!("termux-sync {title} finished");
             }
             Err(err) => {
                 self.output.clear();
                 self.output.extend(err.lines().map(str::to_string));
                 self.output_offset = 0;
-                self.switch_focus(Focus::Output, 1);
+                self.switch_focus(Focus::Output);
                 self.status = "command failed".to_string();
             }
         }
@@ -611,7 +591,6 @@ impl App {
         self.snapshot = snapshot;
         self.output = self.snapshot.log.clone();
         self.output_offset = 0;
-        self.output_shown_at = self.tick;
 
         if self.snapshot.backups.is_empty() {
             self.backup_state.select(None);
@@ -747,15 +726,10 @@ mod tests {
     }
 
     #[test]
-    fn launch_waits_for_animation_before_handoff() {
+    fn handoff_is_queued_without_waiting() {
         let mut app = App::with_snapshot(snapshot());
         app.run(Action::Backup);
-        assert!(app.pending.is_some());
-        assert!(!app.pending_ready());
-        for _ in 0..5 {
-            app.on_tick();
-        }
-        assert!(app.pending_ready());
+        assert_eq!(app.pending, Some(vec!["backup".to_string()]));
     }
 
     #[test]
@@ -776,6 +750,23 @@ mod tests {
     }
 
     #[test]
+    fn task_card_waits_before_showing() {
+        let mut app = App::with_snapshot(snapshot());
+        app.task = Some(TaskOverlay {
+            label: "termux-sync list".to_string(),
+            started_at: 0,
+            done: false,
+            done_at: 0,
+            visible: false,
+        });
+        app.on_tick();
+        app.on_tick();
+        assert!(!app.task.as_ref().unwrap().visible);
+        app.on_tick();
+        assert!(app.task.as_ref().unwrap().visible);
+    }
+
+    #[test]
     fn task_overlay_holds_completion_before_dismissing() {
         let mut app = App::with_snapshot(snapshot());
         app.task = Some(TaskOverlay {
@@ -783,6 +774,7 @@ mod tests {
             started_at: 0,
             done: false,
             done_at: 0,
+            visible: true,
         });
         for _ in 0..5 {
             app.on_tick();
@@ -791,9 +783,8 @@ mod tests {
 
         app.task.as_mut().unwrap().done = true;
         app.task.as_mut().unwrap().done_at = app.tick;
-        for _ in 0..4 {
-            app.on_tick();
-        }
+        app.on_tick();
+        app.on_tick();
         assert!(app.task.is_some());
         app.on_tick();
         assert!(app.task.is_none());
@@ -834,21 +825,29 @@ mod tests {
     }
 
     #[test]
-    fn help_and_pane_animations_complete() {
+    fn help_animation_completes_in_four_ticks() {
         let mut app = App::with_snapshot(snapshot());
         app.open_help();
         assert_eq!(app.help_progress(), 0.0);
-        for _ in 0..5 {
-            app.on_tick();
-        }
-        assert_eq!(app.help_progress(), 1.0);
-
-        app.handle_key(KeyCode::Char('?'));
-        app.handle_key(KeyCode::Tab);
-        assert_eq!(app.pane_progress(), 0.0);
         for _ in 0..4 {
             app.on_tick();
         }
-        assert_eq!(app.pane_progress(), 1.0);
+        assert_eq!(app.help_progress(), 1.0);
+    }
+
+    #[test]
+    fn reduced_motion_skips_help_and_task_motion() {
+        let mut app = App::with_snapshot(snapshot());
+        app.reduce_motion = true;
+        app.open_help();
+        assert_eq!(app.help_progress(), 1.0);
+        app.task = Some(TaskOverlay {
+            label: "termux-sync list".to_string(),
+            started_at: 0,
+            done: false,
+            done_at: 0,
+            visible: true,
+        });
+        assert_eq!(app.task_progress(), 1.0);
     }
 }

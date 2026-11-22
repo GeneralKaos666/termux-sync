@@ -20,10 +20,11 @@ It never reimplements backup logic. Read-only views come from
   pane title.
 - Output pane: scrollable log tail and captured command output, with dimmed
   dates and INFO / WARNING / ERROR chips.
-- Motion: help expands from a small card, narrow layouts reveal the incoming
-  pane, handoff commands show a spinner card before the terminal changes
-  hands, and captured commands (`list`, `disk check`) show a WORKING card
-  with a sweeping progress bar, hold a DONE state, then slide output in.
+- Motion: help text reveals at a fixed size in about 200ms. Captured commands
+  show a WORKING card only when they run longer than 150ms, hold DONE for
+  150ms, then reveal output. Pane changes and output updates are instant.
+- `--no-anim` or `TERMUX_SYNC_TUI_REDUCED_MOTION=1` removes reveal motion while
+  keeping status and color feedback.
 - Startup draws immediately and loads backups in a worker; the header shows
   `LOADING` until the first snapshot arrives.
 - Idle app does not redraw on a timer. Frames are produced on input, worker
@@ -47,6 +48,8 @@ TERMUX_SYNC_BIN=/path/to/termux-sync ./target/release/termux-sync-tui
 ```
 
 `--help` and `--version` work without a terminal.
+
+Disable motion with `--no-anim` or `TERMUX_SYNC_TUI_REDUCED_MOTION=1`.
 
 ## Keys
 

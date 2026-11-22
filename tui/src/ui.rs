@@ -83,11 +83,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         render_help(frame, area, app);
     }
 
-    if app.pending.is_some() {
-        render_launch(frame, area, app);
-    }
-
-    if app.task.is_some() {
+    if app.task.as_ref().is_some_and(|task| task.visible) {
         render_task(frame, area, app);
     }
 }
@@ -206,24 +202,6 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
         render_backups(frame, backups, app);
         render_output(frame, output, app);
     } else {
-        let progress = ease_out(app.pane_progress());
-        let area = if progress < 1.0 {
-            frame.render_widget(Clear, area);
-            let width = (area.width as f32 * (0.55 + 0.45 * progress))
-                .round()
-                .clamp(1.0, area.width as f32) as u16;
-            if app.pane_dir >= 0 {
-                Rect {
-                    x: area.x + area.width - width,
-                    width,
-                    ..area
-                }
-            } else {
-                Rect { width, ..area }
-            }
-        } else {
-            area
-        };
         match app.focus {
             Focus::Actions => render_actions(frame, area, app),
             Focus::Backups => render_backups(frame, area, app),
@@ -358,21 +336,10 @@ fn render_output(frame: &mut Frame, area: Rect, app: &mut App) {
     let end = len.saturating_sub(offset);
     let start = end.saturating_sub(inner_height);
 
-    let mut lines: Vec<Line> = app.output[start..end]
+    let lines: Vec<Line> = app.output[start..end]
         .iter()
         .map(|line| render_log_line(line))
         .collect();
-
-    let progress = ease_out(app.output_progress());
-    if progress < 1.0 {
-        frame.render_widget(Clear, inner);
-        let shift = (((1.0 - progress) * inner_height as f32) * 0.6).round() as usize;
-        if shift > 0 {
-            let mut shifted = vec![Line::default(); shift];
-            shifted.append(&mut lines);
-            lines = shifted;
-        }
-    }
 
     frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
 }
@@ -531,11 +498,8 @@ fn render_too_small(frame: &mut Frame, area: Rect) {
 }
 
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
-    let progress = ease_out(app.help_progress());
-    let max_width = area.width.saturating_sub(2).max(20) as f32;
-    let max_height = area.height.saturating_sub(2).max(7) as f32;
-    let width = (28.0 + 36.0 * progress).min(max_width) as u16;
-    let height = (8.0 + 16.0 * progress).min(max_height) as u16;
+    let width = area.width.saturating_sub(2).clamp(20, 64);
+    let height = area.height.saturating_sub(2).clamp(7, 22);
     let popup = centered(area, width, height);
     let mut lines = vec![Line::from(vec![
         Span::styled("◆ ", fg(ACCENT).bold()),
@@ -578,44 +542,21 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     let inner_height = popup.height.saturating_sub(2) as usize;
     let max_scroll = lines.len().saturating_sub(inner_height);
     let scroll = app.help_scroll.min(max_scroll);
-    let visible: Vec<Line> = lines.into_iter().skip(scroll).take(inner_height).collect();
+    let reveal = if app.reduce_motion {
+        lines.len()
+    } else {
+        (lines.len() as f32 * ease_out(app.help_progress())).ceil() as usize
+    };
+    let visible: Vec<Line> = lines
+        .into_iter()
+        .skip(scroll)
+        .take(inner_height.min(reveal))
+        .collect();
     let detail = (max_scroll > 0).then_some("↑↓ scroll");
 
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(Text::from(visible)).block(pane_block("Help", detail, true, ACCENT)),
-        popup,
-    );
-}
-
-fn render_launch(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(argv) = app.pending.as_ref() else {
-        return;
-    };
-    let progress = ease_out(app.launch_progress());
-    let width = (30.0 + 30.0 * progress).round() as u16;
-    let height = (5.0 + 2.0 * progress).round() as u16;
-    let popup = centered(area, width, height);
-    let spinner = app.spinner().unwrap_or("◐");
-
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("◆ ", fg(ACCENT).bold()),
-            Span::styled("LAUNCHING", fg(ACCENT).bold()),
-        ]),
-        Line::from(vec![
-            Span::styled(format!("{spinner} "), fg(ACCENT).bold()),
-            Span::styled(
-                format!("termux-sync {}", argv.join(" ")),
-                fg(SUCCESS).bold(),
-            ),
-        ]),
-        Line::from(Span::styled("Handing the terminal over…", fg(MUTED))),
-    ];
-
-    frame.render_widget(Clear, popup);
-    frame.render_widget(
-        Paragraph::new(Text::from(lines)).block(pane_block("Launch", None, true, ACCENT)),
         popup,
     );
 }
@@ -939,27 +880,6 @@ mod tests {
     }
 
     #[test]
-    fn launch_overlay_animates_before_handoff() {
-        let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).expect("test terminal");
-        let mut app = app();
-        app.run(crate::app::Action::Backup);
-        app.on_tick();
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("draw succeeds");
-        let content: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(content.contains("LAUNCHING"));
-        assert!(content.contains("termux-sync backup"));
-    }
-
-    #[test]
     fn backup_names_drop_the_app_prefix() {
         assert_eq!(
             short_name("termux_backup_20260101_120000"),
@@ -978,6 +898,7 @@ mod tests {
             started_at: 0,
             done: false,
             done_at: 0,
+            visible: true,
         });
         app.on_tick();
         terminal
