@@ -418,11 +418,44 @@ termux-sync/
 ├── .env.example            Reference for supported environment variables
 ├── install.sh              Local installer for manual setup
 ├── tsctl                   Control tool (install, updater, uninstall, status)
+├── tui/                    Optional Rust operations TUI
 ├── pyproject.toml          PyPI package configuration
 ├── CHANGELOG.md            Version history
 ├── FAQ.md                  Frequently asked questions
 └── README.md               This file
 ```
+
+---
+
+## Optional Rust TUI
+
+The `tui/` directory contains an optional Ratatui dashboard and operations
+cockpit. It is not included in the PyPI wheel or sdist, and `pip install
+termux-sync` does not require Rust.
+
+It streams backup and restore through `termux-sync --json-events`, shows live
+stages and logs, verifies backups, and gates restore behind a package diff and
+typed confirmation.
+
+Requirements:
+
+- Rust 1.85 or newer (`pkg install rust` on Termux)
+- A `termux-sync` build that supports `--json-events`
+
+Build and run:
+
+```bash
+cd tui
+cargo build --release
+./target/release/termux-sync-tui
+```
+
+If the installed `termux-sync` is too old, the TUI refuses with a clear
+message instead of handing over or hanging. See [tui/README.md](tui/README.md)
+for keys, cancellation rules, and layout behavior.
+
+The TUI has its own workflow in `.github/workflows/tui.yml`; Python CI is
+unchanged.
 
 ---
 

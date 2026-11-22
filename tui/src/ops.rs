@@ -185,11 +185,21 @@ pub enum Event {
     Cancelled {
         reason: String,
     },
+    Unsupported(u64),
     Unknown,
 }
 
 pub fn parse_event(line: &str) -> Result<Event, String> {
     let value: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
+    if value
+        .get("v")
+        .and_then(Value::as_u64)
+        .is_some_and(|version| version > 1)
+    {
+        return Ok(Event::Unsupported(
+            value.get("v").and_then(Value::as_u64).unwrap_or(0),
+        ));
+    }
     let name = value
         .get("event")
         .and_then(Value::as_str)
@@ -349,6 +359,16 @@ enum Msg {
     Malformed(String),
     Stderr(String),
     Eof,
+}
+
+pub fn supports_events() -> bool {
+    data::cli_command(&["--json-events".to_string(), "--version".to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 pub struct Operation {
@@ -706,6 +726,14 @@ impl Operation {
                     self.notice = format!("cancelled: {reason}");
                 }
             }
+            Event::Unsupported(version) => {
+                self.status = Status::Failed;
+                self.error = Some(OpError {
+                    message: format!("event protocol v{version} is newer than this TUI supports"),
+                    hint: "Update termux-sync-tui.".to_string(),
+                    exit_code: None,
+                });
+            }
             Event::Unknown => {}
         }
     }
@@ -992,6 +1020,26 @@ pub fn test_operation(kind: Kind) -> Operation {
 }
 
 #[cfg(test)]
+pub fn test_plan() -> Plan {
+    Plan {
+        name: "termux_backup_test".to_string(),
+        date: "2026-11-21T01:17:33".to_string(),
+        label: "before-upgrade".to_string(),
+        storage: "local".to_string(),
+        backup_version: "1.3.9".to_string(),
+        current_version: "1.3.9".to_string(),
+        packages: 1947,
+        to_install: Some(120),
+        already_installed: Some(1827),
+        device_only: Some(210),
+        diff_available: true,
+        archives: vec!["home.tar.gz".to_string(), "usr_etc.tar.gz".to_string()],
+        size: 22_300_000_000,
+        checksums: "pending".to_string(),
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1036,6 +1084,12 @@ mod tests {
     }
 
     #[test]
+    fn newer_protocol_version_is_reported() {
+        let event = parse_event(r#"{"v":2,"event":"log","level":"INFO","message":"x"}"#).unwrap();
+        assert!(matches!(event, Event::Unsupported(2)));
+    }
+
+    #[test]
     fn malformed_event_is_an_error() {
         assert!(parse_event("not json").is_err());
         assert!(parse_event(r#"{"v":1}"#).is_err());
@@ -1058,25 +1112,5 @@ mod tests {
             let total: f32 = stage_defs(kind).iter().map(|(_, _, weight)| weight).sum();
             assert_eq!(total, 100.0);
         }
-    }
-}
-
-#[cfg(test)]
-pub fn test_plan() -> Plan {
-    Plan {
-        name: "termux_backup_test".to_string(),
-        date: "2026-11-21T01:17:33".to_string(),
-        label: "before-upgrade".to_string(),
-        storage: "local".to_string(),
-        backup_version: "1.3.9".to_string(),
-        current_version: "1.3.9".to_string(),
-        packages: 1947,
-        to_install: Some(120),
-        already_installed: Some(1827),
-        device_only: Some(210),
-        diff_available: true,
-        archives: vec!["home.tar.gz".to_string(), "usr_etc.tar.gz".to_string()],
-        size: 22_300_000_000,
-        checksums: "pending".to_string(),
     }
 }

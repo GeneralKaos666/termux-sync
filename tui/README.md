@@ -52,6 +52,9 @@ cargo build --release
 Requires a terminal on stdout. Non-TTY runs exit with status 2 instead of
 drawing garbage.
 
+It also requires a `termux-sync` build with `--json-events`. If the installed
+CLI is older, the TUI refuses to start an operation and tells you to update it.
+
 Use another binary with:
 
 ```bash

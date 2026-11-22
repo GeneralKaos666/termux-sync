@@ -627,6 +627,12 @@ impl App {
     }
 
     fn start_operation(&mut self, kind: Kind, name: &str, args: Vec<String>) {
+        if !crate::ops::supports_events() {
+            self.status =
+                "installed termux-sync is too old for the TUI (missing --json-events). Update it."
+                    .to_string();
+            return;
+        }
         match Operation::start(kind, name, args, self.reduce_motion) {
             Ok(operation) => {
                 self.operation = Some(operation);
