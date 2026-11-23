@@ -101,7 +101,12 @@ def test_tui_is_a_known_command():
 
 
 def test_tui_reports_missing_textual(monkeypatch, capsys):
-    monkeypatch.setitem(sys.modules, "termux_sync.tui", None)
+    import termux_sync.tui as tui
+
+    def missing_textual(prefix):
+        raise ImportError("No module named 'textual'")
+
+    monkeypatch.setattr(tui, "run", missing_textual)
     ts.cmd_tui()
     out = capsys.readouterr().out
     assert "TUI not available" in out

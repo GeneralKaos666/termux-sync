@@ -20,3 +20,17 @@ elif mode == "silent":
     sys.exit(3)
 elif mode == "hang":
     time.sleep(60)
+elif mode == "graceful":
+    import signal
+
+    print(json.dumps({"v": 1, "event": "start", "command": "backup", "name": "fake"}))
+    sys.stdout.flush()
+
+    def stop(signum, frame):
+        print(json.dumps({"v": 1, "event": "cancelled", "reason": "user"}))
+        sys.stdout.flush()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, stop)
+    while True:
+        time.sleep(0.1)

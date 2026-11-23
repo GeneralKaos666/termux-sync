@@ -204,3 +204,27 @@ def test_restore_defers_interrupt_during_extraction(termux_tree, local_cfg, monk
     events, _ = _backup_then_restore(monkeypatch, capsys, local_cfg, "RESTORE")
     assert len(calls) == 2
     assert any(e["event"] == "log" and "deferred" in e["message"].lower() for e in events)
+
+
+def test_redacts_secrets_inside_lists_and_objects():
+    buf = io.StringIO()
+    writer = ts.EventWriter(buf, secrets=("tok-123",))
+    writer.emit("package_diff", install=["tok-123", "git"], nested={"a": ["tok-123"]})
+    raw = buf.getvalue()
+    assert "tok-123" not in raw
+    payload = json.loads(raw)
+    assert payload["install"] == ["***", "git"]
+    assert payload["nested"] == {"a": ["***"]}
+
+
+def test_confirm_gives_up_on_a_silent_pipe():
+    import os
+
+    read_fd, write_fd = os.pipe()
+    reader = os.fdopen(read_fd, "r")
+    try:
+        writer = ts.EventWriter(io.StringIO(), stdin=reader)
+        assert writer.confirm(timeout=0.05) is False
+    finally:
+        reader.close()
+        os.close(write_fd)

@@ -1,5 +1,6 @@
 import sys
 import threading
+import time
 from pathlib import Path
 
 from termux_sync.tui.runner import OperationRunner
@@ -67,3 +68,27 @@ def test_fake_engine_stream_drives_operation_state():
         apply_event(state, event)
     assert state.status == "succeeded"
     assert state.result["verified"] is True
+
+
+def test_confirm_after_exit_is_a_no_op():
+    runner = OperationRunner(
+        [sys.executable, str(FAKE)], on_event=lambda e: None, on_exit=lambda c: None
+    )
+    runner.start("backup", "silent")
+    runner.wait(10)
+    runner.confirm("RESTORE")
+    runner.close()
+
+
+def test_close_asks_the_engine_to_cancel_before_killing():
+    events = []
+    runner = OperationRunner(
+        [sys.executable, str(FAKE)], on_event=events.append, on_exit=lambda c: None
+    )
+    runner.start("backup", "graceful")
+    deadline = time.monotonic() + 5
+    while not events and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert events, "fake engine never started"
+    runner.close()
+    assert any(event["event"] == "cancelled" for event in events)

@@ -22,6 +22,14 @@ def _read_json(path: Path):
         return json.load(handle)
 
 
+def _as_int(value, default: int) -> int:
+    """Config files are hand-editable; a bad value must not stop the cockpit."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _schedule_text(config_dir: Path) -> str:
     path = config_dir / "cron.json"
     if not path.exists():
@@ -30,9 +38,11 @@ def _schedule_text(config_dir: Path) -> str:
         schedule = _read_json(path)
     except (OSError, json.JSONDecodeError):
         return "unreadable"
-    if not schedule.get("enabled"):
+    if not isinstance(schedule, dict) or not schedule.get("enabled"):
         return "off"
-    return f"daily at {int(schedule.get('hour', 2)):02d}:{int(schedule.get('minute', 0)):02d}"
+    hour = _as_int(schedule.get("hour", 2), 2)
+    minute = _as_int(schedule.get("minute", 0), 0)
+    return f"daily at {hour:02d}:{minute:02d}"
 
 
 def _read_manifest(path: Path) -> dict | None:
@@ -81,7 +91,7 @@ def load_snapshot(config_dir: Path | None = None) -> Snapshot:
     snapshot.storage = str(cfg.get("storage", "local"))
     snapshot.local_path = str(cfg.get("local_path", ""))
     snapshot.compression = str(cfg.get("compression", "gz"))
-    snapshot.max_backups = int(cfg.get("max_backups", 5) or 5)
+    snapshot.max_backups = _as_int(cfg.get("max_backups", 5), 5)
 
     if snapshot.storage != "local" or not snapshot.local_path:
         return snapshot
@@ -91,7 +101,13 @@ def load_snapshot(config_dir: Path | None = None) -> Snapshot:
         return snapshot
 
     skipped = 0
-    for directory in sorted(root.iterdir(), reverse=True):
+    try:
+        directories = sorted(root.iterdir(), reverse=True)
+    except OSError as exc:
+        snapshot.warning = f"Backup folder could not be read: {exc.strerror or exc}"
+        return snapshot
+
+    for directory in directories:
         if not directory.is_dir():
             continue
         manifest = _read_manifest(directory / "manifest.json")

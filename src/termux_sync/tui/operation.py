@@ -62,9 +62,22 @@ class OperationScreen(Screen):
 
     def _start_runner(self) -> None:
         self.runner = OperationRunner(
-            self.cli_prefix, on_event=self.handle_event, on_exit=self.handle_exit
+            self.cli_prefix, on_event=self._thread_event, on_exit=self._thread_exit
         )
         self.runner.start(self.command, self.backup_name)
+
+    def _dispatch(self, callback, *args) -> None:
+        """Runner callbacks arrive on worker threads; Textual widgets need the app thread."""
+        try:
+            self.app.call_from_thread(callback, *args)
+        except RuntimeError:
+            callback(*args)
+
+    def _thread_event(self, event: dict) -> None:
+        self._dispatch(self.handle_event, event)
+
+    def _thread_exit(self, code: int) -> None:
+        self._dispatch(self.handle_exit, code)
 
     def handle_event(self, event: dict) -> None:
         if event.get("event") == "stage":
@@ -90,9 +103,12 @@ class OperationScreen(Screen):
                 self.state.status = "succeeded"
             else:
                 self.state.status = "failed"
+                tail = ""
+                if self.runner is not None:
+                    tail = "\n".join(list(getattr(self.runner, "stderr_tail", []))[-5:]).strip()
                 self.state.failure = {
                     "message": f"Engine exited with code {code}",
-                    "hint": "Check the log above.",
+                    "hint": tail or "Check the log above.",
                     "exit_code": code,
                 }
         self._refresh()

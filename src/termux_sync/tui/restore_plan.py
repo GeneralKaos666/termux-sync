@@ -37,7 +37,7 @@ class RestorePlanScreen(Screen):
 
     def on_mount(self) -> None:
         self.runner = OperationRunner(
-            self.cli_prefix, on_event=self.handle_event, on_exit=self.handle_exit
+            self.cli_prefix, on_event=self._thread_event, on_exit=self._thread_exit
         )
         self.runner.start("restore", self.backup_name)
         self._refresh()
@@ -46,10 +46,27 @@ class RestorePlanScreen(Screen):
         if self.runner is not None:
             self.runner.close()
 
+    def _dispatch(self, callback, *args) -> None:
+        """Runner callbacks arrive on worker threads; Textual widgets need the app thread."""
+        try:
+            self.app.call_from_thread(callback, *args)
+        except RuntimeError:
+            callback(*args)
+
+    def _thread_event(self, event: dict) -> None:
+        self._dispatch(self.handle_event, event)
+
+    def _thread_exit(self, code: int) -> None:
+        self._dispatch(self.handle_exit, code)
+
     def can_confirm(self) -> bool:
         return self._confirmed
 
     def submit_confirmation(self, value: str) -> bool:
+        if self.plan is None:
+            self._status = "waiting for the plan before accepting RESTORE"
+            self._refresh()
+            return False
         self._confirmed = value == "RESTORE"
         if self._confirmed and self.runner is not None:
             self.runner.confirm("RESTORE")

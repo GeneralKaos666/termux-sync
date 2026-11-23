@@ -109,10 +109,13 @@ class OperationRunner:
         self.on_exit(_exit_code(code))
 
     def confirm(self, text: str = "RESTORE") -> None:
-        if self.proc is None or self.proc.stdin is None:
+        if self.proc is None or self.proc.stdin is None or self.proc.poll() is not None:
             return
-        self.proc.stdin.write((json.dumps({"confirm": text}) + "\n").encode())
-        self.proc.stdin.flush()
+        try:
+            self.proc.stdin.write((json.dumps({"confirm": text}) + "\n").encode())
+            self.proc.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
 
     def cancel(self) -> None:
         self._signal(signal.SIGINT)
@@ -139,11 +142,16 @@ class OperationRunner:
 
     def close(self) -> None:
         if self.proc is not None and self.proc.poll() is None:
-            self.kill()
+            # Give the engine a chance to run its own cleanup before forcing it.
+            self.cancel()
             try:
-                self.proc.wait(timeout=10)
+                self.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                pass
+                self.kill()
+                try:
+                    self.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
         for thread in self._threads:
             thread.join(timeout=5)
         if self.proc is not None:

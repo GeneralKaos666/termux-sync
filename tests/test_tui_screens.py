@@ -3,14 +3,18 @@ import json
 from pathlib import Path
 
 import pytest
-from textual.widgets import DataTable
 
-from termux_sync.tui.app import TermuxSyncApp
-from termux_sync.tui.dashboard import load_snapshot
-from termux_sync.tui.modals import ConfirmCancelModal
-from termux_sync.tui.operation import OperationScreen
-from termux_sync.tui.restore_plan import RestorePlanScreen
-from termux_sync.tui.widgets import StageStepper
+try:
+    from textual.widgets import DataTable
+
+    from termux_sync.tui.app import TermuxSyncApp
+    from termux_sync.tui.dashboard import load_snapshot
+    from termux_sync.tui.modals import ConfirmCancelModal
+    from termux_sync.tui.operation import OperationScreen
+    from termux_sync.tui.restore_plan import RestorePlanScreen
+    from termux_sync.tui.widgets import StageStepper
+except ImportError:  # pragma: no cover - the tui extra is optional
+    pytest.skip("textual is not installed", allow_module_level=True)
 
 
 def write_backup(root: Path, name: str, packages=2, size=1024):
@@ -87,6 +91,7 @@ class FakeRunner:
         self.cancelled = 0
         self.confirmed = []
         self.pid = 4242
+        self.stderr_tail = []
 
     def start(self, command, name=""):
         return None
@@ -174,6 +179,8 @@ async def test_restore_plan_requires_exact_token(tmp_path, monkeypatch, fake_run
     async with app.run_test() as pilot:
         screen = RestorePlanScreen(cli_prefix=["python"], backup_name="b1")
         app.push_screen(screen)
+        assert screen.submit_confirmation("RESTORE") is False
+        assert fake_runner.confirmed == []
         screen.handle_event({"event": "plan", "name": "b1", "size": 1024, "created": "2026-11-22", "storage": "local", "packages": 2, "targets": ["home"]})
         screen.handle_event({"event": "package_diff", "chunk": 1, "chunks": 1, "install": ["git"], "present": ["python"], "missing": []})
         await pilot.pause()
@@ -224,3 +231,25 @@ async def test_dashboard_delete_suspends_for_cli(tmp_path, monkeypatch):
         await pilot.press("d")
         await pilot.pause()
     assert calls and calls[0][0] == "delete"
+
+
+def test_snapshot_survives_bad_config_values(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"storage": "local", "local_path": str(tmp_path), "max_backups": "many"})
+    )
+    (tmp_path / "cron.json").write_text(json.dumps({"enabled": True, "hour": "late"}))
+    snapshot = load_snapshot(tmp_path)
+    assert snapshot.max_backups == 5
+    assert snapshot.schedule == "daily at 02:00"
+
+
+async def test_failure_card_shows_stderr_tail(tmp_path, monkeypatch, fake_runner):
+    app = make_app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        screen = OperationScreen(cli_prefix=["python"], command="backup")
+        app.push_screen(screen)
+        await pilot.pause()
+        fake_runner.stderr_tail.append("tar: cannot write: No space left on device")
+        screen.handle_exit(2)
+        await pilot.pause()
+        assert "No space left" in str(screen.query_one("#failure").renderable)

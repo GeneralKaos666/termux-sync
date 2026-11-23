@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import json
+import select
 import errno
 import difflib
 import traceback
@@ -127,10 +128,22 @@ class EventWriter:
             text = text.replace(secret, "***")
         return text
 
+    def _redact_value(self, value):
+        """Redact secrets inside nested event payloads, not only top-level strings."""
+        if isinstance(value, str):
+            return self.redact(value)
+        if isinstance(value, list):
+            return [self._redact_value(item) for item in value]
+        if isinstance(value, tuple):
+            return [self._redact_value(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self._redact_value(item) for key, item in value.items()}
+        return value
+
     def emit(self, event: str, **fields):
         payload = {"v": 1, "event": event, "ts": int(time.time() * 1000)}
         for key, value in fields.items():
-            payload[key] = self.redact(value) if isinstance(value, str) else value
+            payload[key] = self._redact_value(value)
         self.stream.write(json.dumps(payload) + "\n")
         self.stream.flush()
 
@@ -150,14 +163,32 @@ class EventWriter:
     def log(self, level: str, message: str):
         self.emit("log", level=level.upper(), message=message)
 
-    def confirm(self, expected: str = "RESTORE") -> bool:
+    def confirm(self, expected: str = "RESTORE", timeout: float = 900.0) -> bool:
         stream = self.stdin if self.stdin is not None else sys.stdin
+        if timeout is not None and not _is_tty(stream) and not _wait_readable(stream, timeout):
+            return False
         try:
             line = stream.readline()
             payload = json.loads(line)
         except (ValueError, OSError):
             return False
         return payload.get("confirm") == expected
+
+
+def _is_tty(stream) -> bool:
+    try:
+        return bool(stream.isatty())
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _wait_readable(stream, timeout: float) -> bool:
+    """Wait for a piped stdin line, so a dead parent cannot hang the engine forever."""
+    try:
+        ready, _, _ = select.select([stream], [], [], timeout)
+    except (OSError, ValueError):
+        return True
+    return bool(ready)
 
 
 EVENTS: Optional[EventWriter] = None
@@ -198,8 +229,7 @@ def _verify_backup(cfg: dict, storage, backup_name: str, meta: dict) -> tuple[Op
     if backend == "gdrive":
         return None, "Google Drive cannot verify remotely"
     if backend == "github":
-        ok = all(info.get("checksum") for info in meta.get("files", {}).values())
-        return ok, "GitHub stream digest"
+        return None, "GitHub cannot verify remotely without downloading the backup"
     root = Path(cfg.get("local_path", str(DEFAULT_DEST))).expanduser() / backup_name
     for info in meta.get("files", {}).values():
         stored = root / info.get("archive", "")
@@ -1705,23 +1735,31 @@ def cmd_backup(cfg: dict, label: str = ""):
     total_size = sum(v["size"] for v in meta["files"].values())
 
     _end("upload")
-    _begin("verify")
-    verified, verify_details = _verify_backup(cfg, storage, backup_name, meta)
-    verify_state = "verified" if verified else ("skipped" if verified is None else "failed")
-    _emit("verify", state=verify_state, details=verify_details)
-    _end("verify", "skipped" if verified is None else ("complete" if verified else "failed"))
+    verified = None
+    if EVENTS is not None:
+        _begin("verify")
+        verified, verify_details = _verify_backup(cfg, storage, backup_name, meta)
+        verify_state = "verified" if verified else ("skipped" if verified is None else "failed")
+        _emit("verify", state=verify_state, details=verify_details)
+        _end("verify", "skipped" if verified is None else ("complete" if verified else "failed"))
 
-    console.print()
-    console.print(Panel(
+    summary = (
         f"[bold green]✓ Backup completed successfully![/bold green]\n\n"
         f"[dim]Name    [/dim] [white]{escape(backup_name)}[/white]\n"
         f"[dim]Date    [/dim] [white]{meta['date'][:19].replace('T', ' ')}[/white]\n"
         f"[dim]Packages[/dim] [white]{len(pkgs)}[/white]\n"
         f"[dim]Size    [/dim] [white]{human_size(total_size)}[/white]\n"
         f"[dim]Storage [/dim] [white]{cfg['storage'].upper()}[/white]\n"
-        f"[dim]Location[/dim] [white]{escape(short_path(location))}[/white]",
+        f"[dim]Location[/dim] [white]{escape(short_path(location))}[/white]"
+    )
+    if verified is False:
+        summary += "\n\n[yellow]⚠ Verification failed — the stored backup may be incomplete.[/yellow]"
+
+    console.print()
+    console.print(Panel(
+        summary,
         title="[bold yellow]Backup Summary[/bold yellow]",
-        border_style="green",
+        border_style="green" if verified is not False else "red",
         padding=(0, 2),
     ))
     log("INFO", f"Backup completed: {backup_name} ({human_size(total_size)})")
@@ -1737,8 +1775,8 @@ def cmd_restore(cfg: dict, backup_name: str = ""):
 
     started_at = time.monotonic()
     stage_labels = {
-        "plan": "Plan",
         "download": "Download",
+        "plan": "Plan",
         "verify": "Verify",
         "extract:home": "Home",
         "extract:usr_etc": "Config",
@@ -2857,22 +2895,29 @@ def _abort():
     sys.exit(130)
 
 
+def _tui_missing():
+    print_error(
+        "TUI not available",
+        "Textual is not installed.",
+        escape("Install it with: pip install 'termux-sync[tui]'"),
+    )
+
+
 def cmd_tui():
     """Launch the full-screen Textual interface when it is installed."""
     try:
         from termux_sync.tui import run
     except ImportError:
-        print_error(
-            "TUI not available",
-            "Textual is not installed.",
-            escape("Install it with: pip install 'termux-sync[tui]'"),
-        )
+        _tui_missing()
         return
     if __package__:
         prefix = [sys.executable, "-m", "termux_sync"]
     else:
         prefix = [sys.executable, os.path.abspath(__file__)]
-    run(prefix)
+    try:
+        run(prefix)
+    except ImportError:
+        _tui_missing()
 
 
 def main(argv=None):
