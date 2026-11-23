@@ -297,3 +297,25 @@ def test_local_verify_flags_corrupt_stored_file(tmp_path):
     )
     assert not ok
     assert "size mismatch" in details
+
+
+def test_rclone_stats_fixture_emits_events(events, monkeypatch):
+    lines = ts.Path("tests/fixtures/rclone_stats.txt").read_text().splitlines()
+
+    class Fake:
+        stderr = iter(lines)
+        returncode = 0
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(ts.subprocess, "Popen", lambda *a, **k: Fake())
+    ts._rclone_progress(["rclone", "copy", "a", "b"], "download")
+    progress = [e for e in parsed(events) if e["event"] == "progress"]
+    assert progress[-1]["current"] == 10 * 1024 * 1024
+
+
+def test_malformed_manifest_archive_is_rejected():
+    manifest = json.loads(ts.Path("tests/fixtures/github_manifest.json").read_text())
+    archive = manifest["files"]["home"]["archive"]
+    assert ts._clean_backup_name(archive) != archive

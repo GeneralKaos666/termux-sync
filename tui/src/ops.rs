@@ -1176,3 +1176,33 @@ mod list_event_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod fixture_tests {
+    use super::*;
+
+    #[test]
+    fn parses_list_fixture() {
+        let text = include_str!("../tests/fixtures/list.jsonl");
+        let mut backups = Vec::new();
+        let mut result = false;
+        for line in text.lines() {
+            match parse_event(line).unwrap() {
+                Event::Backup(backup) => backups.push(backup),
+                Event::Result(_) => result = true,
+                _ => {}
+            }
+        }
+        assert_eq!(backups.len(), 2);
+        assert_eq!(backups[0].name, "b1");
+        assert!(result);
+    }
+
+    #[test]
+    fn truncated_fixture_does_not_panic() {
+        let text = include_str!("../tests/fixtures/malformed.jsonl");
+        let parsed: Vec<_> = text.lines().map(parse_event).collect();
+        assert!(parsed[0].is_err());
+        assert!(parsed[1].is_ok());
+    }
+}
