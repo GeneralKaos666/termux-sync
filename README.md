@@ -455,7 +455,8 @@ the default icons badly.
 
 If the installed `termux-sync` is too old, the TUI refuses with a clear
 message instead of handing over or hanging. See [tui/README.md](tui/README.md)
-for keys, cancellation rules, and layout behavior.
+for keys, cancellation rules, and layout behavior. Recovery steps live in
+[tui/RUNBOOK.md](tui/RUNBOOK.md).
 
 The TUI has its own workflow in `.github/workflows/tui.yml`; Python CI is
 unchanged.

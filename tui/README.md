@@ -115,6 +115,11 @@ disables terminal text selection; hold Shift to select text in most terminals.
 - Backup, restore, delete, setup, schedule and clear-cache run the real
   `termux-sync` command with the terminal restored, then return to the TUI.
 
+## Runbook
+
+Recovery steps for protected restore, cancel timeout, panics, verification
+states, and old CLI installs: [RUNBOOK.md](RUNBOOK.md).
+
 ## Spike limits
 
 - Remote storage (Google Drive, GitHub) shows no backup list; use the List
