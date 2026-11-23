@@ -147,3 +147,60 @@ def test_verify_backup_reports_skip_for_gdrive(termux_tree, local_cfg, monkeypat
     assert verify and verify[0]["state"] == "skipped"
     result = [e for e in events if e["event"] == "result"][0]
     assert result["verified"] is None
+
+
+def _backup_then_restore(monkeypatch, capsys, cfg, confirm, corrupt=False):
+    monkeypatch.setattr(ts, "load_config", lambda: cfg)
+    ts.main(["backup", "--json-events"])
+    capsys.readouterr()
+    if corrupt:
+        root = ts.LocalStorage(cfg).root
+        archive = next(root.glob("termux_backup_*/*.tar.*"))
+        archive.write_bytes(b"not a tarball")
+    monkeypatch.setattr(ts.sys, "stdin", io.StringIO(json.dumps({"confirm": confirm}) + "\n"))
+    code = None
+    try:
+        ts.main(["restore", "--json-events"])
+    except SystemExit as exc:
+        code = exc.code
+    events, _ = _events(capsys)
+    return events, code
+
+
+def test_restore_emits_plan_and_package_diff(termux_tree, local_cfg, monkeypatch, capsys):
+    events, code = _backup_then_restore(monkeypatch, capsys, local_cfg, "RESTORE")
+    plan = [e for e in events if e["event"] == "plan"]
+    assert plan and plan[0]["packages"] == 2
+    assert [e for e in events if e["event"] == "package_diff"]
+    assert code in (0, None)
+
+
+def test_restore_declined_emits_cancelled_and_extracts_nothing(termux_tree, local_cfg, monkeypatch, capsys):
+    target = termux_tree / "home" / ".bashrc"
+    target.write_text("changed after backup\n")
+    events, _ = _backup_then_restore(monkeypatch, capsys, local_cfg, "no")
+    assert [e["reason"] for e in events if e["event"] == "cancelled"] == ["declined"]
+    assert target.read_text() == "changed after backup\n"
+
+
+def test_restore_checksum_failure_blocks_extraction(termux_tree, local_cfg, monkeypatch, capsys):
+    target = termux_tree / "home" / ".bashrc"
+    target.write_text("keep me\n")
+    events, code = _backup_then_restore(monkeypatch, capsys, local_cfg, "RESTORE", corrupt=True)
+    assert [e["state"] for e in events if e["event"] == "verify"] == ["failed"]
+    assert [e for e in events if e["event"] == "error"]
+    assert target.read_text() == "keep me\n"
+    assert code == 1
+
+
+def test_restore_defers_interrupt_during_extraction(termux_tree, local_cfg, monkeypatch, capsys):
+    calls = []
+
+    def interrupting(archive, dest, name, progress, expected_top=None):
+        calls.append(name)
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(ts, "extract_archive", interrupting)
+    events, _ = _backup_then_restore(monkeypatch, capsys, local_cfg, "RESTORE")
+    assert len(calls) == 2
+    assert any(e["event"] == "log" and "deferred" in e["message"].lower() for e in events)

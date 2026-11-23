@@ -1735,6 +1735,31 @@ def cmd_restore(cfg: dict, backup_name: str = ""):
 
     storage = get_storage(cfg)
 
+    started_at = time.monotonic()
+    stage_labels = {
+        "plan": "Plan",
+        "download": "Download",
+        "verify": "Verify",
+        "extract:home": "Home",
+        "extract:usr_etc": "Config",
+        "packages": "Packages",
+        "cleanup": "Cleanup",
+    }
+    total_stages = len(stage_labels)
+    stage_index = {sid: i + 1 for i, sid in enumerate(stage_labels)}
+
+    def _begin(stage_id: str):
+        _stage(stage_id, stage_labels[stage_id], "start", stage_index[stage_id], total_stages)
+
+    def _end(stage_id: str, state: str = "complete"):
+        _stage(stage_id, stage_labels[stage_id], state, stage_index[stage_id], total_stages)
+
+    def _fail(message: str, hint: str = "", exit_code: int = 1):
+        _emit("error", message=message, hint=hint, exit_code=exit_code)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        if EVENTS is not None:
+            sys.exit(exit_code)
+
     console.print("  [bold]Fetching available backups…[/bold]")
     backups = storage.list_backups()
 
@@ -1743,17 +1768,21 @@ def cmd_restore(cfg: dict, backup_name: str = ""):
         return
 
     if not backup_name:
-        print_backup_list(backups)
+        if EVENTS is not None:
+            backup_name = backups[0]["name"]
+            log("INFO", f"Selected newest backup: {backup_name}")
+        else:
+            print_backup_list(backups)
 
-        choice = Prompt.ask("  [bold]Enter backup number or name[/bold]", default="1")
-        try:
-            idx = int(choice) - 1
-            if idx < 0 or idx >= len(backups):
-                console.print(f"  [red]Invalid number. Enter 1–{len(backups)}.[/red]")
-                return
-            backup_name = backups[idx]["name"]
-        except ValueError:
-            backup_name = choice
+            choice = Prompt.ask("  [bold]Enter backup number or name[/bold]", default="1")
+            try:
+                idx = int(choice) - 1
+                if idx < 0 or idx >= len(backups):
+                    console.print(f"  [red]Invalid number. Enter 1–{len(backups)}.[/red]")
+                    return
+                backup_name = backups[idx]["name"]
+            except ValueError:
+                backup_name = choice
 
     safe_backup_name = _clean_backup_name(backup_name)
     if not safe_backup_name:
@@ -1766,16 +1795,19 @@ def cmd_restore(cfg: dict, backup_name: str = ""):
 
     console.print()
     console.print("  [bold]Step 1/4[/bold]  Downloading backup…")
+    _begin("download")
     t0 = time.monotonic()
     with make_progress(transient=True, percent=True) as progress:
         try:
             storage.download(backup_name, tmp_dir, progress)
         except Exception as e:
             progress.stop()
+            _end("download", "failed")
             console.print(f"  [red]✗ Download failed: {escape(str(e))}[/red]")
             log("ERROR", f"Download failed: {e}")
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            _fail(f"Download failed: {e}", "Check storage access and try again.")
             return
+    _end("download")
     dl_files = [f for f in tmp_dir.iterdir() if f.is_file()]
     console.print(
         f"  {status_icon(True)} Downloaded {len(dl_files)} files "
@@ -1786,22 +1818,50 @@ def cmd_restore(cfg: dict, backup_name: str = ""):
     manifest = read_manifest(tmp_dir)
     if not manifest:
         console.print("  [red]✗ Could not read manifest. Backup may be corrupted.[/red]")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        _fail("Could not read manifest. Backup may be corrupted.",
+              "The backup may be incomplete; try another backup.")
         return
+
+    _begin("plan")
+    manifest_files = manifest.get("files", {})
+    _emit("plan", name=backup_name, size=_backup_size(manifest),
+          created=str(manifest.get("date", "")), storage=cfg.get("storage", "local"),
+          packages=len(manifest.get("packages", [])),
+          targets=sorted(manifest_files.keys()))
+    if EVENTS is not None:
+        backup_pkgs = list(manifest.get("packages", []))
+        installed = set(get_installed_packages())
+        chunk_size = 200
+        chunks = max(1, -(-len(backup_pkgs) // chunk_size))
+        for number in range(1, chunks + 1):
+            part = backup_pkgs[(number - 1) * chunk_size:number * chunk_size]
+            EVENTS.emit(
+                "package_diff",
+                chunk=number,
+                chunks=chunks,
+                install=sorted(p for p in part if p not in installed),
+                present=sorted(p for p in part if p in installed),
+                missing=sorted(installed - set(backup_pkgs)),
+            )
+    _end("plan")
 
     console.print()
     console.print("  [bold]Step 2/4[/bold]  Verifying checksums…")
+    _begin("verify")
+    verify_problem = ""
     all_ok = True
     for key, info in manifest.get("files", {}).items():
         if _clean_backup_name(info.get("archive", "")) != info.get("archive"):
             console.print(f"  [red]✗ Refusing unsafe archive name for {escape(repr(key))}[/red]")
             log("WARNING", f"Unsafe archive name in manifest for key: {key!r}")
             all_ok = False
+            verify_problem = verify_problem or f"unsafe archive name for {key!r}"
             continue
         archive = tmp_dir / info["archive"]
         if not archive.exists():
             console.print(f"  [red]✗ Missing archive: {escape(info['archive'])}[/red]")
             all_ok = False
+            verify_problem = verify_problem or f"missing archive {info['archive']}"
             continue
         cs = sha256(archive)
         expected = info.get("checksum")
@@ -1810,8 +1870,16 @@ def cmd_restore(cfg: dict, backup_name: str = ""):
         console.print(f"  {icon} {info['archive']}  [dim]{cs[:12]}…[/dim]")
         if not ok:
             all_ok = False
+            verify_problem = verify_problem or f"checksum mismatch for {info['archive']}"
+
+    _emit("verify", state="verified" if all_ok else "failed",
+          details=verify_problem or "all checksums match")
+    _end("verify", "complete" if all_ok else "failed")
 
     if not all_ok:
+        if EVENTS is not None:
+            _fail("Checksum verification failed. Restore blocked.", verify_problem)
+            return
         if not Confirm.ask("  [yellow]Some checksums failed. Continue anyway?[/yellow]"):
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return
@@ -1829,9 +1897,16 @@ def cmd_restore(cfg: dict, backup_name: str = ""):
     ))
     console.print("  [yellow]⚠ This will overwrite existing files.[/yellow]")
 
-    if not Confirm.ask("  [bold yellow]Proceed with restore?[/bold yellow]"):
+    if EVENTS is not None:
+        approved = EVENTS.confirm("RESTORE")
+    else:
+        approved = Confirm.ask("  [bold yellow]Proceed with restore?[/bold yellow]")
+    if not approved:
         console.print("  [dim]Restore cancelled.[/dim]")
+        _emit("cancelled", reason="declined")
         shutil.rmtree(tmp_dir, ignore_errors=True)
+        if EVENTS is not None:
+            sys.exit(130)
         return
 
     console.print()
@@ -1849,8 +1924,13 @@ def cmd_restore(cfg: dict, backup_name: str = ""):
                 expected_tops[item_key] = Path(item_root).resolve().name
 
         for key, info in manifest.get("files", {}).items():
+            stage_id = f"extract:{key}"
+            has_stage = stage_id in stage_labels
             if _clean_backup_name(info.get("archive", "")) != info.get("archive"):
                 log("WARNING", f"Skipped unsafe archive name in manifest for key: {key!r}")
+                if has_stage:
+                    _stage(stage_id, stage_labels[stage_id], "skipped",
+                           stage_index[stage_id], total_stages)
                 continue
             archive = tmp_dir / info["archive"]
 
@@ -1860,26 +1940,43 @@ def cmd_restore(cfg: dict, backup_name: str = ""):
                 # to derive a destination from untrusted manifest content.
                 console.print(f"  [red]✗ Refusing unknown/untrusted restore target for {key!r}[/red]")
                 log("WARNING", f"Refused restore for unknown manifest key: {key!r}")
+                if has_stage:
+                    _stage(stage_id, stage_labels[stage_id], "skipped",
+                           stage_index[stage_id], total_stages)
                 continue
 
+            if has_stage:
+                _begin(stage_id)
             try:
                 extract_archive(
                     archive, src_dir, info["archive"], progress,
                     expected_top=expected_tops.get(key),
                 )
                 log("INFO", f"Extracted {info['archive']} → {src_dir}")
+                if has_stage:
+                    _end(stage_id)
+            except KeyboardInterrupt:
+                log("WARNING", "Cancel deferred until restore finishes")
+                if has_stage:
+                    _end(stage_id, "failed")
             except Exception as e:
                 console.print(f"  [red]✗ Extract failed: {escape(str(e))}[/red]")
                 log("ERROR", f"Extract failed for {info['archive']}: {e}")
+                if has_stage:
+                    _end(stage_id, "failed")
 
     pkgs = manifest.get("packages", [])
     if pkgs:
         console.print()
         console.print(f"  [bold]Step 4/4[/bold]  Reinstalling [bold green]{len(pkgs)}[/bold green] packages…")
+        _begin("packages")
         install_packages(pkgs, console)
+        _end("packages")
         log("INFO", f"Reinstalled {len(pkgs)} packages")
 
+    _begin("cleanup")
     shutil.rmtree(tmp_dir, ignore_errors=True)
+    _end("cleanup")
 
     console.print()
     console.print(Panel(
@@ -1890,6 +1987,9 @@ def cmd_restore(cfg: dict, backup_name: str = ""):
         padding=(0, 2),
     ))
     log("INFO", f"Restore completed from: {backup_name}")
+    _emit("result", ok=True, name=backup_name, size=_backup_size(manifest),
+          location=backup_name, verified=all_ok,
+          duration_ms=int((time.monotonic() - started_at) * 1000))
 
 
 def cmd_list(cfg: dict):
