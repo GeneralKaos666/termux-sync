@@ -30,6 +30,9 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      - name: PTY tests
+        run: bash tests/pty.sh
+
       - name: Build release binary
         run: cargo build --locked --release
 
