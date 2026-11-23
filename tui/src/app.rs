@@ -222,6 +222,13 @@ pub struct HeaderAreas {
     pub status: Rect,
 }
 
+#[derive(Debug, Clone)]
+pub struct HandoffInfo {
+    pub action: Action,
+    pub title: &'static str,
+    pub detail: &'static str,
+}
+
 pub struct App {
     pub snapshot: Snapshot,
     pub action_state: ListState,
@@ -252,6 +259,9 @@ pub struct App {
     pub pending_select: Option<String>,
     pub pending_confirm: Option<Action>,
     pub pending_label: Option<String>,
+    pub pending_handoff: Option<HandoffInfo>,
+    pub handoff_yes: Rect,
+    pub handoff_no: Rect,
     pub label_text: String,
     pub label_yes: Rect,
     pub label_no: Rect,
@@ -318,6 +328,9 @@ impl App {
             pending_select: None,
             pending_confirm: None,
             pending_label: None,
+            pending_handoff: None,
+            handoff_yes: Rect::default(),
+            handoff_no: Rect::default(),
             label_text: String::new(),
             label_yes: Rect::default(),
             label_no: Rect::default(),
@@ -435,6 +448,25 @@ impl App {
                 }
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
                     self.pending_confirm = None;
+                    self.status = "cancelled".to_string();
+                }
+                _ => {}
+            }
+            return;
+        }
+        if self.pending_handoff.is_some() {
+            match code {
+                KeyCode::Enter => {
+                    if let Some(handoff) = self.pending_handoff.take() {
+                        match handoff.action {
+                            Action::Setup => self.queue_command(vec!["setup"]),
+                            Action::Schedule => self.queue_command(vec!["schedule"]),
+                            _ => {}
+                        }
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.pending_handoff = None;
                     self.status = "cancelled".to_string();
                 }
                 _ => {}
@@ -927,6 +959,21 @@ impl App {
 
     pub fn handle_mouse(&mut self, column: u16, row: u16) {
         let point = Position::new(column, row);
+        if self.pending_handoff.is_some() {
+            if self.handoff_yes.contains(point) {
+                if let Some(handoff) = self.pending_handoff.take() {
+                    match handoff.action {
+                        Action::Setup => self.queue_command(vec!["setup"]),
+                        Action::Schedule => self.queue_command(vec!["schedule"]),
+                        _ => {}
+                    }
+                }
+            } else if self.handoff_no.contains(point) {
+                self.pending_handoff = None;
+                self.status = "cancelled".to_string();
+            }
+            return;
+        }
         if self.pending_label.is_some() {
             if self.label_yes.contains(point) {
                 let label = self.label_text.trim().to_string();
@@ -1145,8 +1192,20 @@ impl App {
             Action::DiskCheck => {
                 self.start_task(Task::Command(vec!["check".to_string(), "~".to_string()]))
             }
-            Action::Setup => self.queue_command(vec!["setup"]),
-            Action::Schedule => self.queue_command(vec!["schedule"]),
+            Action::Setup => {
+                self.pending_handoff = Some(HandoffInfo {
+                    action: Action::Setup,
+                    title: "Setup",
+                    detail: "The setup wizard asks for storage, tokens and paths.",
+                });
+            }
+            Action::Schedule => {
+                self.pending_handoff = Some(HandoffInfo {
+                    action: Action::Schedule,
+                    title: "Auto-backup schedule",
+                    detail: "The scheduler asks for a time and save location.",
+                });
+            }
             Action::ClearCache => self.pending_confirm = Some(Action::ClearCache),
             Action::Refresh => self.refresh(),
             Action::Help => self.open_help(),
@@ -1461,9 +1520,11 @@ mod tests {
     }
 
     #[test]
-    fn handoff_is_queued_without_waiting() {
+    fn handoff_is_queued_after_confirmation() {
         let mut app = App::with_snapshot(snapshot());
         app.run(Action::Setup);
+        assert!(app.pending_handoff.is_some());
+        app.handle_key(KeyCode::Enter);
         assert_eq!(app.pending, Some(vec!["setup".to_string()]));
     }
 
@@ -1503,6 +1564,16 @@ mod tests {
 
         app.run(Action::ClearCache);
         assert_eq!(app.pending_confirm, Some(Action::ClearCache));
+    }
+
+    #[test]
+    fn setup_action_opens_handoff_card_instead_of_prompting_inline() {
+        let mut app = App::with_snapshot(snapshot());
+        app.run(Action::Setup);
+        assert!(app.pending_handoff.is_some());
+        assert!(app.pending.is_none());
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.pending, Some(vec!["setup".to_string()]));
     }
 
     #[test]
@@ -1645,6 +1716,7 @@ mod tests {
     fn ctrl_c_quits_even_with_pending_command() {
         let mut app = App::with_snapshot(snapshot());
         app.run(Action::Setup);
+        app.handle_key(KeyCode::Enter);
         assert!(app.pending.is_some());
         app.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(app.should_quit);

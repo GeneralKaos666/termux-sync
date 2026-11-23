@@ -110,6 +110,63 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.pending_label.is_some() {
         render_backup_label(frame, area, app);
     }
+
+    if app.pending_handoff.is_some() {
+        render_handoff(frame, area, app);
+    }
+}
+
+fn render_handoff(frame: &mut Frame, area: Rect, app: &mut App) {
+    let Some(handoff) = &app.pending_handoff else {
+        return;
+    };
+    let popup = centered(area, area.width.saturating_sub(6).clamp(36, 64), 9);
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let half = inner.width / 2;
+    app.handoff_yes = Rect {
+        x: inner.x,
+        y: inner.y + inner.height.saturating_sub(1),
+        width: half,
+        height: 1,
+    };
+    app.handoff_no = Rect {
+        x: inner.x + half,
+        y: inner.y + inner.height.saturating_sub(1),
+        width: inner.width.saturating_sub(half),
+        height: 1,
+    };
+
+    let title = handoff.title;
+    let detail = handoff.detail;
+    let lines = vec![
+        Line::from(Span::styled(title, fg(WARN).bold())),
+        Line::from(""),
+        Line::from(Span::styled(
+            "The terminal will be handed to termux-sync.",
+            fg(MUTED),
+        )),
+        Line::from(Span::styled(detail, fg(MUTED))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" Enter ", fg(SUCCESS).bold()),
+            Span::styled("continue", fg(MUTED)),
+            Span::raw("    "),
+            Span::styled(" Esc ", fg(ACCENT).bold()),
+            Span::styled("cancel", fg(MUTED)),
+        ]),
+    ];
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(op_block("Handoff", WARN))
+            .wrap(Wrap { trim: true }),
+        popup,
+    );
 }
 
 fn render_backup_label(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -1894,6 +1951,16 @@ mod tests {
         assert!(frame.contains("+  Backup now"));
         assert!(frame.contains("=  List backups"));
         assert!(!frame.contains("≡  List backups"));
+    }
+
+    #[test]
+    fn setup_handoff_card_renders() {
+        let mut app = app();
+        app.run(crate::app::Action::Setup);
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("Handoff"));
+        assert!(frame.contains("termux-sync"));
+        assert!(frame.contains("Enter"));
     }
 
     #[test]
