@@ -26,3 +26,7 @@ htmlcov/
 
 *.tar.gz
 *.part[0-9]*
+
+# Rust build artifacts (spike/rust-tui reference implementation)
+target/
+tui/target/
