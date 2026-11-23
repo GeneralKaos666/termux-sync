@@ -215,6 +215,13 @@ impl Worker {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeaderAreas {
+    pub count: Rect,
+    pub warning: Rect,
+    pub status: Rect,
+}
+
 pub struct App {
     pub snapshot: Snapshot,
     pub action_state: ListState,
@@ -250,6 +257,8 @@ pub struct App {
     pub label_no: Rect,
     pub confirm_yes: Rect,
     pub confirm_no: Rect,
+    pub header_areas: HeaderAreas,
+    pub stat_areas: [Rect; 4],
     pub actions_area: Rect,
     pub backups_area: Rect,
     pub output_area: Rect,
@@ -314,6 +323,8 @@ impl App {
             label_no: Rect::default(),
             confirm_yes: Rect::default(),
             confirm_no: Rect::default(),
+            header_areas: HeaderAreas::default(),
+            stat_areas: [Rect::default(); 4],
             actions_area: Rect::default(),
             backups_area: Rect::default(),
             output_area: Rect::default(),
@@ -946,6 +957,30 @@ impl App {
             return;
         }
 
+        if self.header_areas.warning.contains(point) {
+            self.run(Action::Logs);
+            return;
+        }
+        if self.header_areas.count.contains(point) {
+            self.switch_focus(Focus::Backups);
+            return;
+        }
+        if self.header_areas.status.contains(point) {
+            self.run(Action::Logs);
+            return;
+        }
+        for (index, area) in self.stat_areas.iter().enumerate() {
+            if area.contains(point) {
+                if index == 3 {
+                    self.switch_focus(Focus::Actions);
+                    self.status = format!("AUTO: {}", self.snapshot.config.schedule);
+                } else {
+                    self.switch_focus(Focus::Backups);
+                }
+                return;
+            }
+        }
+
         if self.actions_area.contains(point) {
             let first_row = self.actions_area.y.saturating_add(1);
             let last_row = self
@@ -1430,6 +1465,23 @@ mod tests {
         let mut app = App::with_snapshot(snapshot());
         app.run(Action::Setup);
         assert_eq!(app.pending, Some(vec!["setup".to_string()]));
+    }
+
+    #[test]
+    fn clicking_the_header_count_focuses_backups() {
+        let mut app = App::with_snapshot(snapshot());
+        app.header_areas.count = Rect::new(40, 1, 10, 1);
+        app.handle_mouse(42, 1);
+        assert_eq!(app.focus, Focus::Backups);
+    }
+
+    #[test]
+    fn clicking_status_opens_logs() {
+        let mut app = App::with_snapshot(snapshot());
+        app.header_areas.status = Rect::new(0, 23, 80, 1);
+        app.handle_mouse(5, 23);
+        assert_eq!(app.focus, Focus::Output);
+        assert_eq!(app.status, "showing sync.log");
     }
 
     #[test]

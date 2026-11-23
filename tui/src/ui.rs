@@ -3,7 +3,8 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, BorderType, Cell, Clear, Gauge, List, ListItem, Padding, Paragraph, Row, Table, Wrap,
+    Block, BorderType, Cell, Clear, Gauge, List, ListItem, Padding, Paragraph, Row, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Table, Wrap,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -51,6 +52,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    app.header_areas = Default::default();
+    app.stat_areas = [Rect::default(); 4];
     app.actions_area = Rect::default();
     app.backups_area = Rect::default();
     app.output_area = Rect::default();
@@ -441,6 +444,12 @@ fn render_operation_log(frame: &mut Frame, area: Rect, operation: &Operation) {
         .collect();
 
     frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    let position = operation
+        .logs
+        .len()
+        .saturating_sub(1)
+        .saturating_sub(offset);
+    scrollbar(frame, area, operation.logs.len(), inner_height, position);
 }
 
 fn render_restore_plan(frame: &mut Frame, area: Rect, operation: &Operation) {
@@ -705,6 +714,8 @@ fn render_package_diff(frame: &mut Frame, area: Rect, operation: &Operation) {
         .map(|package| Line::from(format!("  {package}")))
         .collect();
     frame.render_widget(Paragraph::new(Text::from(lines)).block(block), list_area);
+    let position = packages.len().saturating_sub(1).saturating_sub(offset);
+    scrollbar(frame, list_area, packages.len(), inner_height, position);
 }
 
 fn render_operation_result(frame: &mut Frame, area: Rect, operation: &Operation) {
@@ -996,7 +1007,7 @@ fn fmt_millis(millis: u64) -> String {
     fmt_elapsed(std::time::Duration::from_millis(millis))
 }
 
-fn render_hero(frame: &mut Frame, area: Rect, app: &App) {
+fn render_hero(frame: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(fg(ACCENT))
@@ -1045,16 +1056,31 @@ fn render_hero(frame: &mut Frame, area: Rect, app: &App) {
         chips.push(Span::raw(" "));
         chips.push(Span::styled("WARN", fg(WARN).bold()));
     }
+    app.header_areas.count = Rect {
+        x: right.x,
+        y: right.y,
+        width: right.width.saturating_sub(6),
+        height: 1,
+    };
+    if app.snapshot.warning.is_some() {
+        app.header_areas.warning = Rect {
+            x: right.x + right.width.saturating_sub(5),
+            y: right.y,
+            width: 5,
+            height: 1,
+        };
+    }
     frame.render_widget(
         Paragraph::new(Line::from(chips)).alignment(Alignment::Right),
         right,
     );
 }
 
-fn render_stats(frame: &mut Frame, area: Rect, app: &App) {
+fn render_stats(frame: &mut Frame, area: Rect, app: &mut App) {
     let [backups, stored, packages, auto] = Layout::horizontal([Constraint::Fill(1); 4])
         .spacing(1)
         .areas(area);
+    app.stat_areas = [backups, stored, packages, auto];
 
     let total_size: u64 = app.snapshot.backups.iter().map(|backup| backup.size).sum();
     let latest_packages = app
@@ -1147,6 +1173,13 @@ fn render_actions(frame: &mut Frame, area: Rect, app: &mut App) {
         .highlight_style(selection_style(ACCENT));
 
     frame.render_stateful_widget(list, area, &mut app.action_state);
+    scrollbar(
+        frame,
+        area,
+        ACTIONS.len(),
+        area.height.saturating_sub(2) as usize,
+        app.action_state.selected().unwrap_or(0),
+    );
 }
 
 fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -1250,6 +1283,13 @@ fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
         .row_highlight_style(selection_style(SUCCESS));
 
     frame.render_stateful_widget(table, area, &mut app.backup_state);
+    scrollbar(
+        frame,
+        area,
+        visible.len(),
+        area.height.saturating_sub(3) as usize,
+        app.backup_state.selected().unwrap_or(0),
+    );
 }
 
 fn render_output(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -1269,6 +1309,8 @@ fn render_output(frame: &mut Frame, area: Rect, app: &mut App) {
         .collect();
 
     frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    let position = app.output.len().saturating_sub(1).saturating_sub(offset);
+    scrollbar(frame, area, app.output.len(), inner_height, position);
 }
 
 fn render_log_line(line: &str) -> Line<'static> {
@@ -1309,7 +1351,7 @@ fn level_chip(level: &str) -> Span<'static> {
     }
 }
 
-fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
+fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
     let (marker, marker_style) = if let Some(frame) = app.spinner() {
         (frame, fg(ACCENT).bold())
     } else if app.snapshot.warning.is_some() {
@@ -1350,6 +1392,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    app.header_areas.status = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: 1,
+    };
     frame.render_widget(
         Paragraph::new(Text::from(vec![status, Line::from(hint_spans)])),
         area,
@@ -1646,6 +1694,23 @@ fn selection_style(color: Color) -> Style {
     }
 }
 
+fn scrollbar(frame: &mut Frame, area: Rect, content: usize, viewport: usize, position: usize) {
+    if content <= viewport || viewport == 0 {
+        return;
+    }
+    let mut state = ScrollbarState::new(content)
+        .position(position.min(content.saturating_sub(1)))
+        .viewport_content_length(viewport);
+    frame.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(fg(MUTED))
+            .begin_symbol(None)
+            .end_symbol(None),
+        area,
+        &mut state,
+    );
+}
+
 fn count_text(text: &str, color: Color) -> Span<'static> {
     if no_color() {
         Span::styled(format!("[{text}]"), Style::new().bold())
@@ -1829,6 +1894,20 @@ mod tests {
         assert!(frame.contains("+  Backup now"));
         assert!(frame.contains("=  List backups"));
         assert!(!frame.contains("≡  List backups"));
+    }
+
+    #[test]
+    fn backup_scrollbar_renders_when_list_overflows() {
+        let mut app = app();
+        let base = app.snapshot.backups[0].clone();
+        app.snapshot.backups = (0..30)
+            .map(|index| crate::data::Backup {
+                name: format!("termux_backup_{index:04}"),
+                ..base.clone()
+            })
+            .collect();
+        let frame = render_app(&mut app, 100, 24);
+        assert!(frame.contains("█") || frame.contains("║"));
     }
 
     #[test]
