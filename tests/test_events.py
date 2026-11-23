@@ -79,3 +79,71 @@ def test_json_events_restores_console_afterwards(local_cfg, termux_tree, monkeyp
     monkeypatch.setattr(ts, "load_config", lambda: local_cfg)
     ts.main(["backup", "--json-events"])
     assert ts.console is before
+
+
+def _events(capsys):
+    out, err = capsys.readouterr()
+    return [json.loads(line) for line in out.splitlines()], err
+
+
+def _run_json(monkeypatch, capsys, argv, cfg):
+    monkeypatch.setattr(ts, "load_config", lambda: cfg)
+    ts.main(argv)
+    return _events(capsys)
+
+
+def test_backup_emits_stages_in_order(termux_tree, local_cfg, monkeypatch, capsys):
+    events, _ = _run_json(monkeypatch, capsys, ["backup", "--json-events"], local_cfg)
+    started = [e["id"] for e in events if e["event"] == "stage" and e["state"] == "start"]
+    assert started == ["packages", "archive:home", "archive:usr_etc", "manifest", "upload", "verify"]
+
+
+def test_backup_emits_result_with_verification(termux_tree, local_cfg, monkeypatch, capsys):
+    events, _ = _run_json(monkeypatch, capsys, ["backup", "--json-events"], local_cfg)
+    result = [e for e in events if e["event"] == "result"]
+    assert len(result) == 1
+    assert result[0]["ok"] is True
+    assert result[0]["verified"] is True
+    assert result[0]["name"].startswith("termux_backup_")
+    assert result[0]["size"] > 0
+
+
+def test_backup_upload_failure_emits_error_without_result(termux_tree, local_cfg, monkeypatch, capsys):
+    def boom(*args, **kwargs):
+        raise OSError("upload exploded")
+
+    monkeypatch.setattr(ts.LocalStorage, "upload", boom)
+    events, _ = _run_json(monkeypatch, capsys, ["backup", "--json-events"], local_cfg)
+    errors = [e for e in events if e["event"] == "error"]
+    assert errors and errors[0]["exit_code"] == 1
+    assert not [e for e in events if e["event"] == "result"]
+
+
+def test_backup_cancel_emits_cancelled_and_exits_130(termux_tree, local_cfg, monkeypatch, capsys):
+    monkeypatch.setattr(ts, "load_config", lambda: local_cfg)
+    monkeypatch.setattr(ts, "get_installed_packages", lambda: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(SystemExit) as info:
+        ts.main(["backup", "--json-events"])
+    assert info.value.code == 130
+    events, _ = _events(capsys)
+    assert [e["reason"] for e in events if e["event"] == "cancelled"] == ["user"]
+
+
+def test_backup_without_flag_emits_no_json(local_cfg, termux_tree, monkeypatch, capsys):
+    monkeypatch.setattr(ts, "load_config", lambda: local_cfg)
+    ts.main(["backup"])
+    out, _ = capsys.readouterr()
+    assert not any(line.startswith("{") for line in out.splitlines())
+
+
+def test_verify_backup_reports_skip_for_gdrive(termux_tree, local_cfg, monkeypatch, capsys):
+    cfg = dict(local_cfg, storage="gdrive")
+    monkeypatch.setattr(ts, "get_storage", lambda c: type("G", (), {
+        "upload": lambda self, d, n, p: "gdrive://x",
+        "delete_old": lambda self, n: None,
+    })())
+    events, _ = _run_json(monkeypatch, capsys, ["backup", "--json-events"], cfg)
+    verify = [e for e in events if e["event"] == "verify"]
+    assert verify and verify[0]["state"] == "skipped"
+    result = [e for e in events if e["event"] == "result"][0]
+    assert result["verified"] is None

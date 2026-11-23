@@ -108,6 +108,7 @@ def log(level: str, message: str):
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(LOG_FILE, "a") as f:
         f.write(f"[{ts}] [{level.upper()}] {message}\n")
+    _emit("log", level=level.upper(), message=message)
 
 
 class EventWriter:
@@ -172,6 +173,41 @@ def _config_secrets(cfg: dict) -> tuple[str, ...]:
     return tuple(
         value for value in (cfg.get("github_token", ""), cfg.get("encrypt_password", "")) if value
     )
+
+
+def _emit(event: str, **fields):
+    if EVENTS is not None:
+        EVENTS.emit(event, **fields)
+
+
+def _stage(stage_id: str, label: str, state: str, index: int, total: int):
+    if EVENTS is not None:
+        EVENTS.stage(stage_id, label, state, index, total)
+
+
+def _emit_progress(stage: str, current=None, total=None, unit: str = "bytes"):
+    if EVENTS is not None:
+        EVENTS.progress(stage, current=current, total=total, unit=unit)
+
+
+def _verify_backup(cfg: dict, storage, backup_name: str, meta: dict) -> tuple[Optional[bool], str]:
+    """Check the stored backup against the manifest checksums.
+
+    Returns ``(None, reason)`` when the backend cannot verify remotely."""
+    backend = cfg.get("storage", "local")
+    if backend == "gdrive":
+        return None, "Google Drive cannot verify remotely"
+    if backend == "github":
+        ok = all(info.get("checksum") for info in meta.get("files", {}).values())
+        return ok, "GitHub stream digest"
+    root = Path(cfg.get("local_path", str(DEFAULT_DEST))).expanduser() / backup_name
+    for info in meta.get("files", {}).values():
+        stored = root / info.get("archive", "")
+        if not stored.exists():
+            return False, f"missing {info.get('archive')}"
+        if sha256(stored) != info.get("checksum"):
+            return False, f"checksum mismatch for {info.get('archive')}"
+    return True, "local checksums match"
 
 
 DEFAULT_CONFIG = {
@@ -1482,14 +1518,41 @@ def cmd_backup(cfg: dict, label: str = ""):
     excludes = cfg.get("exclude_patterns", [])
     storage  = get_storage(cfg)
 
+    started_at = time.monotonic()
+    stage_labels = {}
+    if getattr(storage, "preflight", None):
+        stage_labels["preflight"] = "Preflight"
+    stage_labels.update({
+        "packages": "Packages",
+        "archive:home": "Home",
+        "archive:usr_etc": "Config",
+        "manifest": "Manifest",
+        "upload": "Upload",
+        "verify": "Verify",
+    })
+    total_stages = len(stage_labels)
+    stage_index = {sid: i + 1 for i, sid in enumerate(stage_labels)}
+
+    def _begin(stage_id: str):
+        _stage(stage_id, stage_labels[stage_id], "start", stage_index[stage_id], total_stages)
+
+    def _end(stage_id: str, state: str = "complete"):
+        _stage(stage_id, stage_labels[stage_id], state, stage_index[stage_id], total_stages)
+
+    _emit("start", command="backup", name=backup_name,
+          storage=cfg["storage"], version=VERSION)
+
     check_storage = getattr(storage, "preflight", None)
     if check_storage:
+        _begin("preflight")
         console.print("  [bold]Check[/bold]   Verifying GitHub repository…")
         try:
             check_storage()
         except BaseException:
+            _end("preflight", "failed")
             _cleanup_tmp()
             raise
+        _end("preflight")
         console.print(f"  {status_icon(True)} Repository is ready\n")
 
     streaming = hasattr(storage, "begin_stream")
@@ -1518,10 +1581,12 @@ def cmd_backup(cfg: dict, label: str = ""):
     }
 
     console.print("  [bold]Step 1/4[/bold]  Collecting installed packages…")
+    _begin("packages")
     pkgs = get_installed_packages()
     meta["packages"] = pkgs
     pkg_file = tmp_dir / "packages.txt"
     pkg_file.write_text("\n".join(pkgs))
+    _end("packages")
     console.print(f"  {status_icon(True)} Found [bold green]{len(pkgs)}[/bold green] installed packages")
     log("INFO", f"Collected {len(pkgs)} packages")
 
@@ -1536,12 +1601,17 @@ def cmd_backup(cfg: dict, label: str = ""):
             ("usr_etc", "Termux config (/usr/etc)", TERMUX_HOME / "etc"),
         ]
         for key, label_text, src in archive_items:
+            stage_id = f"archive:{key}"
             if not src.exists():
+                _stage(stage_id, stage_labels[stage_id], "skipped",
+                       stage_index[stage_id], total_stages)
                 console.print(f"  [yellow]⚠ Skipping {src} (not found)[/yellow]")
                 continue
+            _begin(stage_id)
             out_path = tmp_dir / f"{key}.tar.{compression}"
             sink = storage.stream_sink(out_path.name, progress) if streaming else None
             item_excludes = list(excludes) + _storage_excludes(cfg, src) + _self_excludes(src)
+            _emit_progress(stage_id, current=0)
             try:
                 actual_out = create_archive(src, out_path, compression, item_excludes, label_text,
                                             progress, sink=sink)
@@ -1558,11 +1628,14 @@ def cmd_backup(cfg: dict, label: str = ""):
                     "source":   str(src),
                 }
                 log("INFO", f"Archived {src} → {actual_out.name} ({human_size(archive_size)})")
+                _emit_progress(stage_id, current=archive_size, total=archive_size)
+                _end(stage_id)
             except (StreamAbort, KeyboardInterrupt):
                 if sink is not None:
                     sink.abort()
                 for t in list(progress.tasks):
                     progress.remove_task(t.id)
+                _end(stage_id, "failed")
                 _abort_backup()
                 raise
             except OSError as e:
@@ -1571,25 +1644,31 @@ def cmd_backup(cfg: dict, label: str = ""):
                 if e.errno == errno.ENOSPC:             # out of space: stop, don't continue silently
                     for t in list(progress.tasks):
                         progress.remove_task(t.id)
+                    _end(stage_id, "failed")
                     _abort_backup()
                     raise
                 console.print(f"  [red]✗ Failed to archive {src}: {escape(str(e))}[/red]")
                 log("ERROR", f"Archive failed for {src}: {e}")
+                _end(stage_id, "failed")
             except Exception as e:
                 if sink is not None:
                     sink.abort()
                 console.print(f"  [red]✗ Failed to archive {src}: {escape(str(e))}[/red]")
                 log("ERROR", f"Archive failed for {src}: {e}")
+                _end(stage_id, "failed")
 
     console.print()
     console.print("  [bold]Step 3/4[/bold]  Writing manifest…")
+    _begin("manifest")
     write_manifest(tmp_dir, meta)
+    _end("manifest")
     console.print(f"  {status_icon(True)} Manifest written")
 
     console.print()
     console.print(f"  [bold]Step 4/4[/bold]  Uploading to [bold cyan]{cfg['storage'].upper()}[/bold cyan]…")
     console.print()
 
+    _begin("upload")
     location = ""
     upload_error = None
     with make_progress() as progress:
@@ -1597,6 +1676,7 @@ def cmd_backup(cfg: dict, label: str = ""):
             location = storage.upload(tmp_dir, backup_name, progress)
             storage.delete_old(cfg.get("max_backups", 5))
         except KeyboardInterrupt:
+            _end("upload", "failed")
             _abort_backup()
             raise
         except Exception as e:
@@ -1605,8 +1685,10 @@ def cmd_backup(cfg: dict, label: str = ""):
                 progress.remove_task(t.id)
 
     if upload_error is not None:
+        _end("upload", "failed")
         log("ERROR", f"Upload failed: {upload_error}")
         title, message, hint = _explain(upload_error)
+        _emit("error", message=message, hint=hint, exit_code=1)
         print_error(f"Upload failed — {title}", message, hint)
         if streaming:
             _abort_backup()        # remove the incomplete release so it never counts as a backup
@@ -1622,6 +1704,13 @@ def cmd_backup(cfg: dict, label: str = ""):
 
     total_size = sum(v["size"] for v in meta["files"].values())
 
+    _end("upload")
+    _begin("verify")
+    verified, verify_details = _verify_backup(cfg, storage, backup_name, meta)
+    verify_state = "verified" if verified else ("skipped" if verified is None else "failed")
+    _emit("verify", state=verify_state, details=verify_details)
+    _end("verify", "skipped" if verified is None else ("complete" if verified else "failed"))
+
     console.print()
     console.print(Panel(
         f"[bold green]✓ Backup completed successfully![/bold green]\n\n"
@@ -1636,6 +1725,9 @@ def cmd_backup(cfg: dict, label: str = ""):
         padding=(0, 2),
     ))
     log("INFO", f"Backup completed: {backup_name} ({human_size(total_size)})")
+    _emit("result", ok=True, name=backup_name, size=total_size,
+          location=str(location), verified=verified,
+          duration_ms=int((time.monotonic() - started_at) * 1000))
 
 
 def cmd_restore(cfg: dict, backup_name: str = ""):
@@ -2648,6 +2740,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _abort():
+    _emit("cancelled", reason="user")
     console.print()
     console.print(
         Panel(
@@ -2680,10 +2773,10 @@ def main(argv=None):
         print_error("Invalid usage", "--json-events is only supported for backup and restore.")
         sys.exit(2)
 
+    old_console = console
     try:
         cfg = load_config()
         if args.json_events:
-            old_console = console
             console = Console(stderr=True)
             enable_events(sys.stdout, secrets=_config_secrets(cfg))
         handlers = {
@@ -2702,17 +2795,16 @@ def main(argv=None):
             "export-config": lambda: cmd_export_config(args.target or ""),
             "import-config": lambda: cmd_import_config(args.target or ""),
         }
-        try:
-            handlers[args.command]()
-        finally:
-            if args.json_events:
-                console = old_console
-                EVENTS = None
+        handlers[args.command]()
     except KeyboardInterrupt:
         _abort()
     except Exception as exc:
         handle_crash(exc)
         sys.exit(1)
+    finally:
+        if args.json_events:
+            console = old_console
+            EVENTS = None
 
 
 if __name__ == "__main__":
