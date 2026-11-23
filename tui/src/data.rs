@@ -74,6 +74,10 @@ pub fn log_path() -> PathBuf {
     config_dir().join("sync.log")
 }
 
+pub fn history_path() -> PathBuf {
+    config_dir().join("tui-history.json")
+}
+
 pub fn load_snapshot() -> Snapshot {
     let mut warning = None;
 

@@ -92,6 +92,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         render_help(frame, area, app);
     }
 
+    if app.show_history {
+        render_history(frame, area, app);
+    }
+
     if app.task.as_ref().is_some_and(|task| task.visible) {
         render_task(frame, area, app);
     }
@@ -1359,6 +1363,7 @@ fn hints(focus: Focus, wide: bool) -> &'static [(&'static str, &'static str)] {
             ("Enter", "run"),
             ("Tab", "focus"),
             ("L", "list"),
+            ("h", "history"),
             ("R", "refresh"),
             ("?", "help"),
             ("q", "quit"),
@@ -1425,6 +1430,50 @@ fn render_too_small(frame: &mut Frame, area: Rect) {
     ])
     .areas(area);
     frame.render_widget(paragraph, middle);
+}
+
+fn render_history(frame: &mut Frame, area: Rect, app: &App) {
+    let popup = centered(
+        area,
+        area.width.saturating_sub(4).clamp(40, 92),
+        22.min(area.height.saturating_sub(2)),
+    );
+    let mut lines = vec![Line::from(Span::styled(
+        "Recent operations",
+        fg(ACCENT).bold(),
+    ))];
+    if app.history.is_empty() {
+        lines.push(Line::from(Span::styled("No operations yet.", fg(MUTED))));
+    }
+    for (index, entry) in app.history.iter().enumerate() {
+        let selected = index == app.history_selected;
+        let style = if selected {
+            fg(ACCENT).bold()
+        } else {
+            fg(Color::Reset)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if selected { "▸ " } else { "  " }, style),
+            Span::styled(format!("{:<8}", entry.kind), style),
+            Span::styled(format!("{:<18}", entry.name), style),
+            Span::styled(format!("{:<10}", entry.status), fg(MUTED)),
+            Span::styled(
+                format!("{:<8}", crate::data::human_size(entry.size)),
+                fg(MUTED),
+            ),
+            Span::styled(fmt_millis(entry.duration_ms), fg(MUTED)),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "↑↓ select · r retry · Esc close",
+        fg(MUTED),
+    )));
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).block(op_block("History", ACCENT)),
+        popup,
+    );
 }
 
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
@@ -1780,6 +1829,25 @@ mod tests {
         assert!(frame.contains("+  Backup now"));
         assert!(frame.contains("=  List backups"));
         assert!(!frame.contains("≡  List backups"));
+    }
+
+    #[test]
+    fn history_overlay_renders_entries() {
+        let mut app = app();
+        app.history = vec![crate::history::HistoryEntry {
+            kind: "backup".to_string(),
+            name: "termux_backup_test".to_string(),
+            status: "succeeded".to_string(),
+            size: 1024,
+            duration_ms: 2000,
+            verified: Some(true),
+            at: 1,
+        }];
+        app.show_history = true;
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("History"));
+        assert!(frame.contains("termux_backup_test"));
+        assert!(frame.contains("retry"));
     }
 
     #[test]

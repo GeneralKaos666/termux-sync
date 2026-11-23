@@ -1,5 +1,6 @@
 mod app;
 mod data;
+mod history;
 mod ops;
 mod ui;
 

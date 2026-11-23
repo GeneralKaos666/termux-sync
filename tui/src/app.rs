@@ -5,6 +5,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::widgets::{ListState, TableState};
 
 use crate::data::{self, Backup, Snapshot};
+use crate::history::{HistoryEntry, HistoryStore};
 use crate::ops::{Kind, Operation, Status};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +234,9 @@ pub struct App {
     pub task: Option<TaskOverlay>,
     pub loading: bool,
     pub help_scroll: usize,
+    pub history: Vec<HistoryEntry>,
+    pub show_history: bool,
+    pub history_selected: usize,
     pub reduce_motion: bool,
     pub ascii: bool,
     pub screen: Screen,
@@ -254,6 +258,7 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         let mut app = Self::with_snapshot(Snapshot::default());
+        app.history = HistoryStore::load(&data::history_path());
         app.loading = true;
         app.status = "loading backups…".to_string();
         app.refresh();
@@ -293,6 +298,9 @@ impl App {
             task: None,
             loading: false,
             help_scroll: 0,
+            history: Vec::new(),
+            show_history: false,
+            history_selected: 0,
             reduce_motion: false,
             ascii: false,
             screen: Screen::Dashboard,
@@ -426,6 +434,32 @@ impl App {
             self.handle_label_key(code, modifiers);
             return;
         }
+        if self.show_history {
+            match code {
+                KeyCode::Esc | KeyCode::Char('h') | KeyCode::Char('q') => {
+                    self.show_history = false;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.history_selected = self.history_selected.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if self.history_selected + 1 < self.history.len() {
+                        self.history_selected += 1;
+                    }
+                }
+                KeyCode::Char('r') => {
+                    if let Some(entry) = self.history.get(self.history_selected).cloned() {
+                        self.show_history = false;
+                        match history_command(&entry) {
+                            Some((kind, name, args)) => self.start_operation(kind, &name, args),
+                            None => self.status = "cannot retry this entry".to_string(),
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         if self.operation.is_some() {
             self.handle_operation_key(code, modifiers);
             return;
@@ -466,6 +500,10 @@ impl App {
             KeyCode::BackTab => self.switch_focus(self.focus.previous()),
             KeyCode::Char('R') => self.refresh(),
             KeyCode::Char('L') => self.run(Action::List),
+            KeyCode::Char('h') => {
+                self.show_history = true;
+                self.history_selected = 0;
+            }
             _ => match self.focus {
                 Focus::Actions => self.handle_actions_key(code),
                 Focus::Backups => self.handle_backups_key(code),
@@ -799,6 +837,33 @@ impl App {
 
         if finished {
             self.op_result_handled = true;
+            let result = operation.result.as_ref();
+            let kind = match operation.kind {
+                Kind::Backup => "backup",
+                Kind::Restore => "restore",
+            };
+            let status = match operation.status {
+                Status::Succeeded => "succeeded",
+                Status::Warnings => "warnings",
+                Status::Failed => "failed",
+                Status::Cancelled => "cancelled",
+                _ => "unknown",
+            };
+            let entry = HistoryEntry {
+                kind: kind.to_string(),
+                name: operation.name.clone(),
+                status: status.to_string(),
+                size: result.map_or(0, |result| result.size),
+                duration_ms: operation.elapsed().as_millis() as u64,
+                verified: result.and_then(|result| result.verified),
+                at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0),
+            };
+            self.history.insert(0, entry);
+            self.history.truncate(20);
+            let _ = HistoryStore::save(&data::history_path(), &self.history);
         }
         if let Some(name) = success_name {
             if !name.is_empty() {
@@ -1213,6 +1278,18 @@ impl App {
     }
 }
 
+pub fn history_command(entry: &HistoryEntry) -> Option<(Kind, String, Vec<String>)> {
+    match entry.kind.as_str() {
+        "backup" => Some((Kind::Backup, "backup".to_string(), backup_command(""))),
+        "restore" => Some((
+            Kind::Restore,
+            entry.name.clone(),
+            restore_command(&entry.name),
+        )),
+        _ => None,
+    }
+}
+
 pub fn backup_command(label: &str) -> Vec<String> {
     let label = label.trim();
     if label.is_empty() {
@@ -1394,6 +1471,35 @@ mod tests {
             app.selected_backup().map(|backup| backup.name.as_str()),
             Some("backup-two")
         );
+    }
+
+    #[test]
+    fn history_retry_maps_kind_to_command() {
+        let restore = HistoryEntry {
+            kind: "restore".into(),
+            name: "backup-two".into(),
+            status: "succeeded".into(),
+            size: 1,
+            duration_ms: 1,
+            verified: None,
+            at: 1,
+        };
+        assert_eq!(
+            history_command(&restore),
+            Some((
+                Kind::Restore,
+                "backup-two".to_string(),
+                restore_command("backup-two")
+            ))
+        );
+        let backup = HistoryEntry {
+            kind: "backup".into(),
+            ..restore
+        };
+        assert!(matches!(
+            history_command(&backup),
+            Some((Kind::Backup, _, _))
+        ));
     }
 
     #[test]
