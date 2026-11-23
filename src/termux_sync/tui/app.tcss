@@ -1,0 +1,27 @@
+Screen {
+    layout: vertical;
+}
+
+#status {
+    height: 1;
+    padding: 0 1;
+    background: $boost;
+    color: $text;
+}
+
+#banner {
+    height: auto;
+    padding: 0 1;
+    background: $warning 20%;
+    color: $text;
+}
+
+#backups {
+    height: 1fr;
+}
+
+#empty {
+    height: 1fr;
+    content-align: center middle;
+    color: $text-muted;
+}
