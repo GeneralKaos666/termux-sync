@@ -1,4 +1,6 @@
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -104,3 +106,14 @@ def test_tui_reports_missing_textual(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "TUI not available" in out
     assert "pip install 'termux-sync[tui]'" in out
+
+
+def test_module_entry_point_runs_cli():
+    root = Path(__file__).resolve().parent.parent
+    env = dict(os.environ, PYTHONPATH=str(root / "src"))
+    result = subprocess.run(
+        [sys.executable, "-m", "termux_sync", "--version"],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0
+    assert "termux-sync v" in result.stdout

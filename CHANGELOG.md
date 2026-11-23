@@ -9,6 +9,10 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Full-screen TUI cockpit** (`termux-sync tui`, optional `tui` extra). It shows the dashboard, streams backup and restore stages, progress, and logs, previews the restore plan with its package diff, and asks for the exact `RESTORE` token before extracting.
+- **`--json-events` mode for `backup` and `restore`.** The engine emits one JSON object per line on stdout (stages, progress, logs, verification, result, errors, cancellation) and moves human output to stderr, so another process can follow an operation without parsing the console UI. Secret values from the config are redacted before emission.
+
 ---
 
 ## [1.3.9] - 2026-11-21

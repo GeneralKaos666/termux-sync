@@ -173,6 +173,18 @@ termux-sync delete --name termux_backup_20240415_143000     # delete specific ba
 
 Requires confirmation before deletion. Works with local, Google Drive, and GitHub storage.
 
+### Full-screen interface
+
+```bash
+pip install 'termux-sync[tui]'
+termux-sync tui
+```
+
+Keys: `b` backup, `r` restore, `l` refresh, `d` delete, `s` setup, `q` quit.
+Inside an operation: `Esc` cancel, `r` retry, `?` help.
+
+The TUI drives the same engine as the commands above: it starts `termux-sync backup --json-events` (or `restore --json-events`) as a child process and follows its JSON Lines events, so human output stays on stderr and stdout stays machine-readable.
+
 ### Setup wizard
 
 ```bash

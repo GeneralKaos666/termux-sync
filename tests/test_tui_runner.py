@@ -56,3 +56,14 @@ def test_cancel_signals_process_group():
     runner.cancel()
     assert runner.wait(10) == 130
     runner.close()
+
+
+def test_fake_engine_stream_drives_operation_state():
+    from termux_sync.tui.models import apply_event, new_operation
+
+    state = new_operation("backup")
+    events, _ = collect("ok")
+    for event in events:
+        apply_event(state, event)
+    assert state.status == "succeeded"
+    assert state.result["verified"] is True
