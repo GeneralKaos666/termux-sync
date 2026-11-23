@@ -459,7 +459,8 @@ for keys, cancellation rules, and layout behavior. Recovery steps live in
 [tui/RUNBOOK.md](tui/RUNBOOK.md).
 
 The TUI has its own workflow in `.github/workflows/tui.yml`; Python CI is
-unchanged.
+unchanged. The workflow also cross-checks Android targets with the NDK; prebuilt
+release binaries are a later distribution task.
 
 ---
 
