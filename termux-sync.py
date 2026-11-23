@@ -2222,7 +2222,7 @@ def cmd_list(cfg: dict):
         console.print()
 
 
-def cmd_delete(cfg: dict, backup_name: str = ""):
+def cmd_delete(cfg: dict, backup_name: str = "", assume_yes: bool = False):
     print_section("DELETE BACKUP", f"Storage: {cfg['storage'].upper()}")
 
     storage = get_storage(cfg)
@@ -2252,7 +2252,7 @@ def cmd_delete(cfg: dict, backup_name: str = ""):
     backup_name = cleaned_name
 
     console.print(f"\n  [bold red]Backup to be deleted:[/bold red] [white]{escape(backup_name)}[/white]")
-    if not Confirm.ask("  [bold red]Are you sure? This cannot be undone.[/bold red]", default=False):
+    if not assume_yes and not Confirm.ask("  [bold red]Are you sure? This cannot be undone.[/bold red]", default=False):
         console.print("  [dim]Cancelled.[/dim]")
         return
 
@@ -2750,7 +2750,7 @@ CACHE_TARGETS = [
 ]
 
 
-def cmd_clear_cache():
+def cmd_clear_cache(assume_yes: bool = False):
     print_section("CLEAR CACHE", "Remove temporary and cached files")
 
     existing = []
@@ -2777,7 +2777,7 @@ def cmd_clear_cache():
     console.print(f"\n  Total reclaimable: [bold yellow]{human_size(total_size)}[/bold yellow]\n")
 
     console.print("  [dim]Enter numbers to clear (comma-separated), or press Enter to select all:[/dim]")
-    raw_choice = Prompt.ask("  Target (e.g. 1,3 or Enter=all)", default="")
+    raw_choice = "" if assume_yes else Prompt.ask("  Target (e.g. 1,3 or Enter=all)", default="")
     if raw_choice.strip():
         try:
             indices  = [int(x.strip()) - 1 for x in raw_choice.split(",") if x.strip()]
@@ -2792,7 +2792,7 @@ def cmd_clear_cache():
         console.print("  [yellow]No targets selected.[/yellow]\n")
         return
 
-    first = Confirm.ask("  [bold]Proceed with clearing cache?[/bold]", default=False)
+    first = True if assume_yes else Confirm.ask("  [bold]Proceed with clearing cache?[/bold]", default=False)
     if not first:
         console.print("\n  [yellow]Aborted.[/yellow]\n")
         return
@@ -2803,7 +2803,7 @@ def cmd_clear_cache():
         console.print(f"    [red]✗[/red]  {label}  [dim]({human_size(size)})[/dim]")
     console.print()
 
-    second = Confirm.ask("  [bold red]Are you sure? This cannot be undone.[/bold red]", default=False)
+    second = True if assume_yes else Confirm.ask("  [bold red]Are you sure? This cannot be undone.[/bold red]", default=False)
     if not second:
         console.print("\n  [yellow]Aborted.[/yellow]\n")
         return
@@ -2940,6 +2940,7 @@ OPTIONS = [
     ("-n, --name NAME",   "Backup name to restore / delete"),
     ("--lines N",         "Lines to show in logs (default 40)"),
     ("--json-events",     "Emit JSON progress events (used by the TUI)"),
+    ("--yes",             "Skip delete / clear-cache confirmations"),
     ("--debug",           "Show the full traceback if something fails"),
     ("-v, --version",     "Print version and exit"),
     ("-h, --help",        "Show this help"),
@@ -3025,6 +3026,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--name",  "-n", default="")
     parser.add_argument("--lines", default=40, type=int)
     parser.add_argument("--json-events", action="store_true")
+    parser.add_argument("--yes", action="store_true")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--version", "-v", action="store_true")
     parser.add_argument("--help", "-h", action="store_true")
@@ -3070,14 +3072,16 @@ def main(argv=None):
             "backup":        lambda: cmd_backup(cfg, label=args.label),
             "restore":       lambda: cmd_restore(cfg, backup_name=args.name),
             "list":          lambda: cmd_list(cfg),
-            "delete":        lambda: cmd_delete(cfg, backup_name=args.name),
+            "delete":        lambda: cmd_delete(cfg, backup_name=args.name,
+                                              assume_yes=getattr(args, "yes", False)),
             "schedule":      lambda: cmd_schedule(),
             "daemon":        lambda: cmd_daemon(cfg),
             "status":        lambda: cmd_status(cfg),
             "logs":          lambda: cmd_logs(args.lines),
             "clear-logs":    lambda: cmd_clear_logs(),
             "check":         lambda: cmd_check(args.target or ""),
-            "clear-cache":   lambda: cmd_clear_cache(),
+            "clear-cache":   lambda: cmd_clear_cache(
+                assume_yes=getattr(args, "yes", False)),
             "export-config": lambda: cmd_export_config(args.target or ""),
             "import-config": lambda: cmd_import_config(args.target or ""),
         }

@@ -64,6 +64,7 @@ TERMUX_SYNC_BIN=/path/to/termux-sync ./target/release/termux-sync-tui
 `--help` and `--version` work without a terminal.
 
 Disable motion with `--no-anim` or `TERMUX_SYNC_TUI_REDUCED_MOTION=1`.
+Use ASCII icons with `--ascii` or `TERMUX_SYNC_TUI_ASCII=1`.
 
 ## Keys
 
@@ -74,6 +75,7 @@ Disable motion with `--no-anim` or `TERMUX_SYNC_TUI_REDUCED_MOTION=1`.
 | `d` | delete selected backup from Backups pane |
 | `Tab` / `Shift-Tab` | switch pane |
 | `R` | refresh backups and status |
+| `L` | list backups (inline, including remote output) |
 | `g` / `G` | top / bottom of output |
 | `?` | help |
 | `↑` / `↓` in help | scroll help at small sizes |
@@ -92,9 +94,10 @@ Operation keys:
 | `↑` / `↓`, `PgUp` / `PgDn`, `G` | scroll logs or diff |
 | type `RESTORE`, then `Enter` | confirm a restore |
 
-Mouse: click an action to run it, click a backup row to select it, click a pane
-to focus it. Mouse capture disables terminal text selection; hold Shift to
-select text in most terminals.
+Mouse: click an action to run it, click a backup row to select it, click a
+pane to focus it, and scroll the wheel over lists and logs. Delete, clear-cache
+and operation-cancel dialogs have clickable confirm/cancel areas. Mouse capture
+disables terminal text selection; hold Shift to select text in most terminals.
 
 ## Layout
 
@@ -118,5 +121,7 @@ select text in most terminals.
   action, which captures `termux-sync list` output.
 - Backup labels cannot be typed in the TUI yet.
 - Restore cannot be cancelled after extraction starts.
-- Setup, schedule, delete and clear-cache still hand over the terminal.
+- Setup and schedule still hand over the terminal.
+- Delete and clear-cache run captured after an in-TUI confirmation using
+  `termux-sync --yes`.
 - The operations protocol is version 1 and backup/restore only.

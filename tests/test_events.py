@@ -147,3 +147,30 @@ def test_restore_checksum_failure_never_extracts(events, local_cfg, termux_tree,
     assert all(event.get("id") != "extract:home" for event in events_list)
     verify = [event for event in events_list if event["event"] == "verify"][0]
     assert verify["state"] == "failed"
+
+
+def test_delete_yes_skips_confirmation(local_cfg, termux_tree, monkeypatch):
+    manifest = make_backup(local_cfg)
+
+    def fail(*args, **kwargs):
+        raise AssertionError("confirmation should not be asked")
+
+    monkeypatch.setattr(ts.Confirm, "ask", staticmethod(fail))
+    ts.cmd_delete(local_cfg, backup_name=manifest["name"], assume_yes=True)
+    stored = ts.Path(local_cfg["local_path"]) / manifest["name"]
+    assert not stored.exists()
+
+
+def test_clear_cache_yes_removes_without_prompts(tmp_path, monkeypatch):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "junk").write_text("x")
+    monkeypatch.setattr(ts, "CACHE_TARGETS", [("test cache", cache)])
+
+    def fail(*args, **kwargs):
+        raise AssertionError("confirmation should not be asked")
+
+    monkeypatch.setattr(ts.Confirm, "ask", staticmethod(fail))
+    ts.cmd_clear_cache(assume_yes=True)
+    assert cache.exists()
+    assert list(cache.iterdir()) == []

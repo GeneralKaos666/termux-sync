@@ -5,8 +5,9 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, BorderType, Cell, Clear, Gauge, List, ListItem, Padding, Paragraph, Row, Table, Wrap,
 };
+use unicode_width::UnicodeWidthStr;
 
-use crate::app::{ACTIONS, App, Focus, Screen};
+use crate::app::{ACTIONS, Action, App, Focus, Screen};
 use crate::data::{backup_age, human_size, parse_log_line};
 use crate::ops::{Kind, Operation, Plan, StageState, Status};
 
@@ -94,6 +95,69 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.task.as_ref().is_some_and(|task| task.visible) {
         render_task(frame, area, app);
     }
+
+    if let Some(action) = app.pending_confirm {
+        render_action_confirm(frame, area, app, action);
+    }
+}
+
+fn render_action_confirm(frame: &mut Frame, area: Rect, app: &mut App, action: Action) {
+    let (title, message) = match action {
+        Action::Delete => (
+            "Delete backup",
+            format!(
+                "Delete {}?",
+                app.selected_backup()
+                    .map(|backup| backup.name.as_str())
+                    .unwrap_or("the selected backup")
+            ),
+        ),
+        Action::ClearCache => ("Clear cache", "Clear all cache directories?".to_string()),
+        _ => return,
+    };
+    let popup = centered(area, area.width.saturating_sub(6).clamp(32, 58), 8);
+    let lines = vec![
+        Line::from(Span::styled(title, fg(WARN).bold())),
+        Line::from(""),
+        Line::from(message),
+        Line::from(Span::styled("This cannot be undone.", fg(DANGER).bold())),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" Enter ", fg(SUCCESS).bold()),
+            Span::styled("confirm", fg(MUTED)),
+            Span::raw("    "),
+            Span::styled(" Esc ", fg(ACCENT).bold()),
+            Span::styled("cancel", fg(MUTED)),
+        ]),
+    ];
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let button_y = inner.y + inner.height.saturating_sub(1);
+    let half = inner.width / 2;
+    app.confirm_yes = Rect {
+        x: inner.x,
+        y: button_y,
+        width: half,
+        height: 1,
+    };
+    app.confirm_no = Rect {
+        x: inner.x + half,
+        y: button_y,
+        width: inner.width.saturating_sub(half),
+        height: 1,
+    };
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(op_block(title, WARN))
+            .alignment(Alignment::Center),
+        popup,
+    );
 }
 
 fn render_operation(frame: &mut Frame, area: Rect, app: &App, operation: &Operation) {
@@ -919,11 +983,11 @@ fn render_hero(frame: &mut Frame, area: Rect, app: &App) {
     let mut chips = vec![
         badge(&app.snapshot.config.storage.to_uppercase(), ACCENT),
         Span::raw(" "),
-        badge(&count_label, count_color),
+        count_text(&count_label, count_color),
     ];
     if app.snapshot.warning.is_some() {
         chips.push(Span::raw(" "));
-        chips.push(Span::styled("[!]", fg(WARN).bold()));
+        chips.push(Span::styled("WARN", fg(WARN).bold()));
     }
     frame.render_widget(
         Paragraph::new(Line::from(chips)).alignment(Alignment::Right),
@@ -1001,12 +1065,18 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
 fn render_actions(frame: &mut Frame, area: Rect, app: &mut App) {
     app.actions_area = area;
     let inner = area.width.saturating_sub(4) as usize;
-    let label_width = inner.saturating_sub(2);
+    let label_width = inner.saturating_sub(3);
     let items: Vec<ListItem> = ACTIONS
         .iter()
         .map(|item| {
+            let glyph = if app.ascii { item.ascii } else { item.glyph };
+            let glyph_width = UnicodeWidthStr::width(glyph);
+            let padding = 2usize.saturating_sub(glyph_width);
             ListItem::new(Line::from(vec![
-                Span::styled(format!("{} ", item.glyph), fg(ACCENT).bold()),
+                Span::styled(
+                    format!("{}{} ", glyph, " ".repeat(padding)),
+                    fg(ACCENT).bold(),
+                ),
                 Span::raw(format!("{:<width$}", item.label, width = label_width)),
             ]))
         })
@@ -1183,10 +1253,13 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         fg(MUTED)
     };
-    let status = Line::from(vec![
-        Span::styled(format!(" {marker} "), marker_style),
-        Span::styled(app.status.clone(), status_style),
-    ]);
+    let warning = app.snapshot.warning.is_some();
+    let mut status_spans = vec![Span::styled(format!(" {marker} "), marker_style)];
+    if warning {
+        status_spans.push(Span::styled("warning: ", fg(WARN).bold()));
+    }
+    status_spans.push(Span::styled(app.status.clone(), status_style));
+    let status = Line::from(status_spans);
 
     let wide = area.width >= 80;
     let mut hint_spans = vec![
@@ -1220,6 +1293,7 @@ fn hints(focus: Focus, wide: bool) -> &'static [(&'static str, &'static str)] {
             ("↑↓", "move"),
             ("Enter", "run"),
             ("Tab", "focus"),
+            ("L", "list"),
             ("R", "refresh"),
             ("?", "help"),
             ("q", "quit"),
@@ -1228,6 +1302,7 @@ fn hints(focus: Focus, wide: bool) -> &'static [(&'static str, &'static str)] {
             ("↑↓", ""),
             ("Enter", ""),
             ("Tab", ""),
+            ("L", ""),
             ("R", ""),
             ("?", ""),
             ("q", ""),
@@ -1455,6 +1530,14 @@ fn selection_style(color: Color) -> Style {
     }
 }
 
+fn count_text(text: &str, color: Color) -> Span<'static> {
+    if no_color() {
+        Span::styled(format!("[{text}]"), Style::new().bold())
+    } else {
+        Span::styled(text.to_string(), fg(color).bold())
+    }
+}
+
 fn badge(text: &str, color: Color) -> Span<'static> {
     if no_color() {
         Span::styled(format!("[{text}]"), Style::new().bold())
@@ -1619,7 +1702,27 @@ mod tests {
         assert!(frame.contains("v1.3.9 GZ"));
         assert!(frame.contains("╭"));
         assert!(frame.contains("↑"));
-        assert!(frame.contains("☰"));
+        assert!(frame.contains("≡"));
+    }
+
+    #[test]
+    fn ascii_mode_uses_ascii_action_icons() {
+        let mut app = app();
+        app.ascii = true;
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("+  Backup now"));
+        assert!(frame.contains("=  List backups"));
+        assert!(!frame.contains("≡  List backups"));
+    }
+
+    #[test]
+    fn warning_state_labels_the_warn_chip_and_status() {
+        let mut app = app();
+        app.snapshot.warning = Some("GITHUB storage".to_string());
+        app.status = "GITHUB storage".to_string();
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("WARN"));
+        assert!(frame.contains("warning:"));
     }
 
     #[test]

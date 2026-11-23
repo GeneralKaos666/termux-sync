@@ -55,6 +55,8 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
         || std::env::args().any(|arg| arg == "--no-anim");
     let mut app = App::new();
     app.reduce_motion = reduce_motion;
+    app.ascii = std::env::var_os("TERMUX_SYNC_TUI_ASCII").is_some_and(|value| !value.is_empty())
+        || std::env::args().any(|arg| arg == "--ascii");
     let mut redraw = true;
 
     loop {
@@ -76,6 +78,19 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
                 }
                 Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
                     app.handle_mouse(mouse.column, mouse.row);
+                    redraw = true;
+                }
+                Event::Mouse(mouse)
+                    if matches!(
+                        mouse.kind,
+                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    ) =>
+                {
+                    app.handle_scroll(
+                        mouse.column,
+                        mouse.row,
+                        mouse.kind == MouseEventKind::ScrollUp,
+                    );
                     redraw = true;
                 }
                 Event::Resize(_, _) => redraw = true,
@@ -174,9 +189,11 @@ Keys:
 
 Options:
   --no-anim  disable motion (also TERMUX_SYNC_TUI_REDUCED_MOTION=1)
+  --ascii    use ASCII icons (also TERMUX_SYNC_TUI_ASCII=1)
 
 Environment:
   TERMUX_SYNC_BIN                 termux-sync executable (default: termux-sync)
-  TERMUX_SYNC_TUI_REDUCED_MOTION  disable motion when non-empty"
+  TERMUX_SYNC_TUI_REDUCED_MOTION  disable motion when non-empty
+  TERMUX_SYNC_TUI_ASCII           use ASCII icons when non-empty"
     );
 }

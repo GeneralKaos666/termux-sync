@@ -104,7 +104,7 @@ pub fn load_snapshot() -> Snapshot {
         }
     } else {
         warning = Some(format!(
-            "{} storage: press L to run `termux-sync list` in the terminal",
+            "{} storage: press L to list backups in the TUI",
             config.storage.to_uppercase()
         ));
         Vec::new()

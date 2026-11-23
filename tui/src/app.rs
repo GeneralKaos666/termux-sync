@@ -64,6 +64,7 @@ pub enum Action {
 
 pub struct ActionItem {
     pub glyph: &'static str,
+    pub ascii: &'static str,
     pub label: &'static str,
     pub action: Action,
 }
@@ -71,61 +72,73 @@ pub struct ActionItem {
 pub const ACTIONS: &[ActionItem] = &[
     ActionItem {
         glyph: "↑",
+        ascii: "+",
         label: "Backup now",
         action: Action::Backup,
     },
     ActionItem {
         glyph: "↺",
+        ascii: "<",
         label: "Restore selected",
         action: Action::Restore,
     },
     ActionItem {
         glyph: "✕",
+        ascii: "x",
         label: "Delete selected",
         action: Action::Delete,
     },
     ActionItem {
-        glyph: "☰",
+        glyph: "≡",
+        ascii: "=",
         label: "List backups",
         action: Action::List,
     },
     ActionItem {
         glyph: "▤",
+        ascii: "#",
         label: "Show logs",
         action: Action::Logs,
     },
     ActionItem {
         glyph: "◔",
+        ascii: "%",
         label: "Disk check (~)",
         action: Action::DiskCheck,
     },
     ActionItem {
         glyph: "⚙",
+        ascii: "*",
         label: "Setup",
         action: Action::Setup,
     },
     ActionItem {
         glyph: "◷",
+        ascii: "@",
         label: "Schedule",
         action: Action::Schedule,
     },
     ActionItem {
-        glyph: "⌫",
+        glyph: "◇",
+        ascii: "-",
         label: "Clear cache",
         action: Action::ClearCache,
     },
     ActionItem {
         glyph: "⟳",
+        ascii: "~",
         label: "Refresh",
         action: Action::Refresh,
     },
     ActionItem {
         glyph: "?",
+        ascii: "?",
         label: "Help",
         action: Action::Help,
     },
     ActionItem {
         glyph: "↩",
+        ascii: "q",
         label: "Quit",
         action: Action::Quit,
     },
@@ -216,10 +229,14 @@ pub struct App {
     pub loading: bool,
     pub help_scroll: usize,
     pub reduce_motion: bool,
+    pub ascii: bool,
     pub screen: Screen,
     pub operation: Option<Operation>,
     pub op_result_handled: bool,
     pub pending_select: Option<String>,
+    pub pending_confirm: Option<Action>,
+    pub confirm_yes: Rect,
+    pub confirm_no: Rect,
     pub actions_area: Rect,
     pub backups_area: Rect,
     pub output_area: Rect,
@@ -266,10 +283,14 @@ impl App {
             loading: false,
             help_scroll: 0,
             reduce_motion: false,
+            ascii: false,
             screen: Screen::Dashboard,
             operation: None,
             op_result_handled: false,
             pending_select: None,
+            pending_confirm: None,
+            confirm_yes: Rect::default(),
+            confirm_no: Rect::default(),
             actions_area: Rect::default(),
             backups_area: Rect::default(),
             output_area: Rect::default(),
@@ -356,6 +377,20 @@ impl App {
     }
 
     fn handle_key_with(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        if let Some(action) = self.pending_confirm {
+            match code {
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    self.pending_confirm = None;
+                    self.execute_confirmed_action(action);
+                }
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
+                    self.pending_confirm = None;
+                    self.status = "cancelled".to_string();
+                }
+                _ => {}
+            }
+            return;
+        }
         if self.operation.is_some() {
             self.handle_operation_key(code, modifiers);
             return;
@@ -395,6 +430,7 @@ impl App {
             KeyCode::Tab => self.switch_focus(self.focus.next()),
             KeyCode::BackTab => self.switch_focus(self.focus.previous()),
             KeyCode::Char('R') => self.refresh(),
+            KeyCode::Char('L') => self.run(Action::List),
             _ => match self.focus {
                 Focus::Actions => self.handle_actions_key(code),
                 Focus::Backups => self.handle_backups_key(code),
@@ -703,14 +739,64 @@ impl App {
         changed
     }
 
-    pub fn handle_mouse(&mut self, column: u16, row: u16) {
-        if self.operation.is_some() {
+    pub fn handle_scroll(&mut self, column: u16, row: u16, up: bool) {
+        if self.pending_confirm.is_some() {
+            return;
+        }
+        if let Some(operation) = &mut self.operation {
+            if operation.status == Status::AwaitingConfirm && operation.diff_open {
+                operation.diff_scroll = if up {
+                    operation.diff_scroll.saturating_add(3)
+                } else {
+                    operation.diff_scroll.saturating_sub(3)
+                };
+            } else if operation.is_running() {
+                operation.log_offset = if up {
+                    operation.log_offset.saturating_add(3)
+                } else {
+                    operation.log_offset.saturating_sub(3)
+                };
+            }
             return;
         }
         if self.pending.is_some() || self.task.is_some() || self.show_help {
             return;
         }
         let point = Position::new(column, row);
+        if self.actions_area.contains(point) {
+            self.move_action(if up { -1 } else { 1 });
+            self.switch_focus(Focus::Actions);
+        } else if self.backups_area.contains(point) {
+            self.move_backup(if up { -1 } else { 1 });
+            self.switch_focus(Focus::Backups);
+        } else if self.output_area.contains(point) {
+            self.output_offset = if up {
+                self.output_offset.saturating_add(3)
+            } else {
+                self.output_offset.saturating_sub(3)
+            };
+            self.switch_focus(Focus::Output);
+        }
+    }
+
+    pub fn handle_mouse(&mut self, column: u16, row: u16) {
+        let point = Position::new(column, row);
+        if let Some(action) = self.pending_confirm {
+            if self.confirm_yes.contains(point) {
+                self.pending_confirm = None;
+                self.execute_confirmed_action(action);
+            } else if self.confirm_no.contains(point) {
+                self.pending_confirm = None;
+                self.status = "cancelled".to_string();
+            }
+            return;
+        }
+        if self.operation.is_some() {
+            return;
+        }
+        if self.pending.is_some() || self.task.is_some() || self.show_help {
+            return;
+        }
 
         if self.actions_area.contains(point) {
             let first_row = self.actions_area.y.saturating_add(1);
@@ -823,8 +909,8 @@ impl App {
                 }
             }
             Action::Delete => {
-                if let Some(name) = self.selected_backup().map(|backup| backup.name.clone()) {
-                    self.queue_command(vec!["delete", "--name", &name]);
+                if self.selected_backup().is_some() {
+                    self.pending_confirm = Some(Action::Delete);
                 } else {
                     self.status = "no backup selected".to_string();
                 }
@@ -841,10 +927,32 @@ impl App {
             }
             Action::Setup => self.queue_command(vec!["setup"]),
             Action::Schedule => self.queue_command(vec!["schedule"]),
-            Action::ClearCache => self.queue_command(vec!["clear-cache"]),
+            Action::ClearCache => self.pending_confirm = Some(Action::ClearCache),
             Action::Refresh => self.refresh(),
             Action::Help => self.open_help(),
             Action::Quit => self.should_quit = true,
+        }
+    }
+
+    fn execute_confirmed_action(&mut self, action: Action) {
+        match action {
+            Action::Delete => {
+                if let Some(name) = self.selected_backup().map(|backup| backup.name.clone()) {
+                    self.start_task(Task::Command(vec![
+                        "delete".to_string(),
+                        "--name".to_string(),
+                        name,
+                        "--yes".to_string(),
+                    ]));
+                }
+            }
+            Action::ClearCache => {
+                self.start_task(Task::Command(vec![
+                    "clear-cache".to_string(),
+                    "--yes".to_string(),
+                ]));
+            }
+            _ => {}
         }
     }
 
@@ -1072,6 +1180,27 @@ mod tests {
         let mut app = App::with_snapshot(snapshot());
         app.run(Action::Setup);
         assert_eq!(app.pending, Some(vec!["setup".to_string()]));
+    }
+
+    #[test]
+    fn scroll_moves_the_action_selection() {
+        let mut app = App::with_snapshot(snapshot());
+        app.actions_area = Rect::new(0, 0, 26, 20);
+        app.handle_scroll(2, 5, true);
+        assert_eq!(app.action_state.selected(), Some(ACTIONS.len() - 1));
+        app.handle_scroll(2, 5, false);
+        assert_eq!(app.action_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn delete_and_clear_cache_confirm_inside_the_tui() {
+        let mut app = App::with_snapshot(snapshot());
+        app.run(Action::Delete);
+        assert_eq!(app.pending_confirm, Some(Action::Delete));
+        app.pending_confirm = None;
+
+        app.run(Action::ClearCache);
+        assert_eq!(app.pending_confirm, Some(Action::ClearCache));
     }
 
     #[test]
