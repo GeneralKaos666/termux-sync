@@ -81,7 +81,7 @@ async def test_dashboard_empty_state(tmp_path, monkeypatch):
     app = make_app(tmp_path, monkeypatch)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert "No backups yet" in str(app.screen.query_one("#empty").content)
+        assert "No local backups" in str(app.screen.query_one("#empty").content)
 
 
 class FakeRunner:
@@ -223,14 +223,18 @@ async def test_reduced_motion_disables_animation(monkeypatch):
 
 
 async def test_dashboard_delete_suspends_for_cli(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    write_backup(tmp_path / "backups", "termux_backup_20260101_000000")
     app = make_app(tmp_path, monkeypatch)
     calls = []
     monkeypatch.setattr("termux_sync.tui.dashboard.run_cli", lambda prefix, argv: calls.append(argv))
     monkeypatch.setattr(type(app), "suspend", lambda self: contextlib.nullcontext())
     async with app.run_test() as pilot:
+        await pilot.pause()
         await pilot.press("d")
         await pilot.pause()
-    assert calls and calls[0][0] == "delete"
+    assert calls and calls[0][:2] == ["delete", "--name"]
+    assert calls[0][2] == "termux_backup_20260101_000000"
 
 
 def test_snapshot_survives_bad_config_values(tmp_path):
@@ -240,7 +244,7 @@ def test_snapshot_survives_bad_config_values(tmp_path):
     (tmp_path / "cron.json").write_text(json.dumps({"enabled": True, "hour": "late"}))
     snapshot = load_snapshot(tmp_path)
     assert snapshot.max_backups == 5
-    assert snapshot.schedule == "daily at 02:00"
+    assert snapshot.schedule == "daily 02:00"
 
 
 async def test_failure_card_shows_stderr_tail(tmp_path, monkeypatch, fake_runner):
@@ -253,3 +257,62 @@ async def test_failure_card_shows_stderr_tail(tmp_path, monkeypatch, fake_runner
         screen.handle_exit(2)
         await pilot.pause()
         assert "No space left" in str(screen.query_one("#failure").renderable)
+
+
+def test_backup_helpers_match_the_rust_cockpit():
+    from datetime import datetime
+
+    from termux_sync.tui.dashboard import backup_age, short_name, size_bar
+
+    assert short_name("termux_backup_20260101_000000") == "20260101_000000"
+    assert short_name("custom") == "custom"
+    assert size_bar(0, 100, 4) == "▱▱▱▱"
+    assert size_bar(50, 100, 4) == "▰▰▱▱"
+    assert size_bar(100, 100, 4) == "▰▰▰▰"
+
+    now = datetime(2026, 11, 22, 12, 0).timestamp()
+    assert backup_age({"modified": now - 30}, now=now) == "now"
+    assert backup_age({"modified": now - 3600}, now=now) == "1h"
+    assert backup_age({"date": "2026-11-21 12:00"}, now=now) == "1d"
+
+
+def test_render_log_line_colours_the_level():
+    from termux_sync.tui.dashboard import render_log_line
+
+    plain = render_log_line("[2026-11-22 10:00:00] [WARNING] disk low").plain
+    assert "WARN" in plain
+    assert "disk low" in plain
+
+
+async def test_dashboard_shows_hero_and_stat_cards(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    write_backup(tmp_path / "backups", "termux_backup_20260101_000000", size=2048)
+    app = make_app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "TERMUX SYNC" in str(app.query_one("#hero-left").content)
+        assert "1 BACKUP" in str(app.query_one("#hero-right").content)
+        assert app.query_one("#stats").display is True
+        assert app.query_one("#stat-backups").border_title == "BACKUPS"
+        assert app.query_one("#stat-stored").content.plain.startswith("2.0 KB")
+        assert str(app.query_one("#backups-title").content).startswith("▸ Backups")
+
+
+async def test_narrow_dashboard_shows_one_pane_and_tab_cycles(tmp_path, monkeypatch):
+    app = make_app(tmp_path, monkeypatch)
+    async with app.run_test(size=(60, 20)) as pilot:
+        await pilot.pause()
+        assert app.query_one("#actions-pane").display is True
+        assert app.query_one("#backups-pane").display is False
+        await pilot.press("tab")
+        await pilot.pause()
+        assert app.query_one("#backups-pane").display is True
+        assert app.query_one("#actions-pane").display is False
+
+
+async def test_tiny_terminal_shows_the_too_small_card(tmp_path, monkeypatch):
+    app = make_app(tmp_path, monkeypatch)
+    async with app.run_test(size=(40, 10)) as pilot:
+        await pilot.pause()
+        assert app.query_one("#too-small").display is True
+        assert app.query_one("#body").display is False

@@ -32,13 +32,15 @@ class ConfirmCancelModal(ModalScreen[bool]):
         self.dismiss(True)
 
 
-HELP_TEXT = """b   Backup
-r   Restore the newest backup
-l   Reload the dashboard
-d   Delete a backup (hands over to the CLI)
-s   Run setup (hands over to the CLI)
-?   This help
-q   Quit"""
+HELP_TEXT = """↑↓ / Tab  move between panes
+Enter     run the highlighted action or restore the selected backup
+b         Backup now
+r         Restore the selected backup
+d         Delete the selected backup
+l         Reload the dashboard
+s         Setup
+?         This help
+q         Quit"""
 
 
 class HelpScreen(ModalScreen[None]):

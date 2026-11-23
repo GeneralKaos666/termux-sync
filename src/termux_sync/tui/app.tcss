@@ -2,18 +2,108 @@ Screen {
     layout: vertical;
 }
 
-#status {
-    height: 1;
-    padding: 0 1;
-    background: $boost;
-    color: $text;
+/* -- dashboard ------------------------------------------------------- */
+
+#too-small {
+    height: 1fr;
+    border: round #ffd75f;
+    content-align: center middle;
+    text-align: center;
+    color: #ffd75f;
 }
 
-#banner {
-    height: auto;
+#hero {
+    height: 3;
+    border: round #46dcff;
     padding: 0 1;
-    background: $warning 20%;
-    color: $text;
+}
+
+#hero-left {
+    width: 60%;
+    height: 1;
+}
+
+#hero-right {
+    width: 40%;
+    height: 1;
+    text-align: right;
+}
+
+#stats {
+    height: 3;
+}
+
+#stat-backups,
+#stat-stored,
+#stat-packages,
+#stat-auto {
+    width: 1fr;
+    height: 3;
+    padding: 0 1;
+    border-title-style: bold;
+}
+
+#stat-backups {
+    border: round #5fd75f;
+    border-title-color: #5fd75f;
+}
+
+#stat-stored {
+    border: round #46dcff;
+    border-title-color: #46dcff;
+}
+
+#stat-packages {
+    border: round #d278ff;
+    border-title-color: #d278ff;
+}
+
+#stat-auto {
+    border: round #ffd75f;
+    border-title-color: #ffd75f;
+}
+
+#body {
+    height: 1fr;
+}
+
+#actions-pane {
+    width: 26;
+    height: 1fr;
+    border: round #46dcff;
+    padding: 0 1;
+}
+
+#actions {
+    height: 1fr;
+    background: transparent;
+    border: none;
+}
+
+#right {
+    width: 1fr;
+    height: 1fr;
+}
+
+#backups-pane {
+    height: 55%;
+    border: round #5fd75f;
+}
+
+#output-pane {
+    height: 45%;
+    border: round #d278ff;
+}
+
+#actions-pane.focused,
+#backups-pane.focused,
+#output-pane.focused {
+    border: round #ffffff;
+}
+
+.pane-title {
+    height: 1;
+    text-style: bold;
 }
 
 #backups {
@@ -23,8 +113,21 @@ Screen {
 #empty {
     height: 1fr;
     content-align: center middle;
-    color: $text-muted;
+    text-align: center;
+    color: #8a8a8a;
 }
+
+#output {
+    height: 1fr;
+}
+
+#footer-status,
+#footer-hints {
+    height: 1;
+    padding: 0 1;
+}
+
+/* -- operation screen ------------------------------------------------ */
 
 #title {
     height: 1;
@@ -67,6 +170,8 @@ Screen {
     background: $warning 20%;
     color: $text;
 }
+
+/* -- modals ---------------------------------------------------------- */
 
 ConfirmCancelModal {
     align: center middle;

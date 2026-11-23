@@ -180,8 +180,10 @@ pip install 'termux-sync[tui]'
 termux-sync tui
 ```
 
-Keys: `b` backup, `r` restore, `l` refresh, `d` delete, `s` setup, `q` quit.
+Keys: `b` backup, `r` restore, `l` refresh, `d` delete, `s` setup, `Tab` switch pane, `Enter` run, `q` quit.
 Inside an operation: `Esc` cancel, `r` retry, `?` help.
+
+The dashboard mirrors the Rust cockpit: a gradient hero with storage and backup badges, cards for backups, stored size, packages, and the auto-backup schedule, an actions pane, the backup table (name, age, size, relative size bar, packages), and the tail of `sync.log`.
 
 The TUI drives the same engine as the commands above: it starts `termux-sync backup --json-events` (or `restore --json-events`) as a child process and follows its JSON Lines events, so human output stays on stderr and stdout stays machine-readable.
 
