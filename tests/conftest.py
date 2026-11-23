@@ -10,6 +10,16 @@ def isolated_tmpdir(tmp_path, monkeypatch):
     monkeypatch.setenv("TMPDIR", str(scratch))
 
 
+@pytest.fixture(autouse=True)
+def isolated_engine_paths(tmp_path, monkeypatch):
+    """Keep engine logs and config out of the real ~/.config/termux-sync."""
+    config_dir = tmp_path / "engine-config"
+    config_dir.mkdir()
+    monkeypatch.setattr(ts, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(ts, "CONFIG_FILE", config_dir / "config.json")
+    monkeypatch.setattr(ts, "LOG_FILE", config_dir / "sync.log")
+
+
 @pytest.fixture
 def config_home(tmp_path, monkeypatch):
     monkeypatch.setattr(ts, "CONFIG_DIR", tmp_path)

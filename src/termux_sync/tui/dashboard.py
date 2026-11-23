@@ -1,6 +1,7 @@
 """Read-only view of the on-disk config, backup manifests, and log for the cockpit."""
 
 import json
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -281,3 +282,24 @@ def status_text(snapshot: Snapshot) -> str:
 def run_cli(cli_prefix: list[str], argv: list[str]) -> None:
     """Hand the terminal to the existing CLI while the app is suspended."""
     subprocess.run(cli_prefix + list(argv))
+
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_RE.sub("", text)
+
+
+def run_captured(cli_prefix: list[str], argv: list[str]) -> str:
+    """Run a read-only CLI command and return its output for the output pane."""
+    try:
+        result = subprocess.run(
+            cli_prefix + list(argv), capture_output=True, text=True, timeout=600
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"could not run termux-sync {' '.join(argv)}: {exc}"
+    text = strip_ansi(result.stdout + result.stderr).strip()
+    if not text:
+        return f"termux-sync {' '.join(argv)} exited with {result.returncode}"
+    return text

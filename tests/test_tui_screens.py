@@ -1,5 +1,6 @@
 import contextlib
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -316,3 +317,28 @@ async def test_tiny_terminal_shows_the_too_small_card(tmp_path, monkeypatch):
         await pilot.pause()
         assert app.query_one("#too-small").display is True
         assert app.query_one("#body").display is False
+
+
+def test_run_captured_strips_ansi_and_keeps_both_streams(tmp_path):
+    from termux_sync.tui.dashboard import run_captured, strip_ansi
+
+    assert strip_ansi("\x1b[31mred\x1b[0m") == "red"
+    text = run_captured(
+        [sys.executable, "-c",
+         "import sys; print('\\x1b[32mstdout line\\x1b[0m'); print('stderr line', file=sys.stderr)"],
+        [],
+    )
+    assert "stdout line" in text
+    assert "stderr line" in text
+    assert "\x1b[" not in text
+
+
+async def test_captured_output_renders_inside_the_output_pane(tmp_path, monkeypatch):
+    app = make_app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._show_output("Backup #1\nName  termux_backup_20260101_000000", "list")
+        await pilot.pause()
+        assert "Backup #1" in app.query_one("#output").content.plain
+        assert app.focus_pane == "output"
+        assert "list" in str(app.query_one("#output-title").content)

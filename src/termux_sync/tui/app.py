@@ -2,6 +2,7 @@
 
 from rich.style import Style
 from rich.text import Text
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -76,6 +77,9 @@ class TermuxSyncApp(App):
         self.cli_prefix = list(cli_prefix)
         self.snapshot: Snapshot = load_snapshot()
         self.focus_pane = "actions"
+        self.output_text: str | None = None
+        self.output_title = ""
+        self.busy: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("", id="too-small")
@@ -301,6 +305,15 @@ class TermuxSyncApp(App):
 
     def _render_output(self) -> None:
         output = self.query_one("#output", Static)
+        title = self.query_one("#output-title", Static)
+
+        if self.output_text is not None:
+            title.update(f"▸ Output · {self.output_title}" if self.output_title else "▸ Output")
+            body = self.output_text.strip() or "(no output)"
+            output.update(Text(body, style=Style(color=MUTED if not body else None)))
+            return
+
+        title.update("▸ Output · sync.log")
         if not self.snapshot.log:
             output.update(Text("No log entries yet.", style=Style(color=MUTED)))
             return
@@ -312,14 +325,17 @@ class TermuxSyncApp(App):
         output.update(text)
 
     def _render_footer(self) -> None:
-        marker = "●"
-        marker_color = WARN if self.snapshot.warning else SUCCESS
+        if self.busy:
+            marker, marker_color = "◐", ACCENT
+            label, label_color = f"running termux-sync {self.busy}…", MUTED
+        else:
+            marker = "●"
+            marker_color = WARN if self.snapshot.warning else SUCCESS
+            label = status_text(self.snapshot)
+            label_color = WARN if self.snapshot.warning else MUTED
         status = Text()
         status.append(f" {marker} ", style=Style(color=marker_color))
-        status.append(
-            status_text(self.snapshot),
-            style=Style(color=WARN if self.snapshot.warning else MUTED),
-        )
+        status.append(label, style=Style(color=label_color))
         self.query_one("#footer-status", Static).update(status)
 
         wide = self.size.width >= SPLIT_WIDTH
@@ -371,9 +387,9 @@ class TermuxSyncApp(App):
             "backup": self.action_backup,
             "restore": self.action_restore,
             "delete": self.action_delete,
-            "list": lambda: self._hand_off(["list"]),
-            "logs": lambda: self._hand_off(["logs"]),
-            "disk": lambda: self._hand_off(["check"]),
+            "list": lambda: self._capture(["list"]),
+            "logs": self.action_show_logs,
+            "disk": lambda: self._capture(["check", "~"]),
             "setup": self.action_setup,
             "schedule": lambda: self._hand_off(["schedule"]),
             "clear-cache": lambda: self._hand_off(["clear-cache"]),
@@ -389,6 +405,36 @@ class TermuxSyncApp(App):
         with self.suspend():
             run_cli(self.cli_prefix, argv)
         self.action_reload()
+
+    @work(thread=True, exclusive=True)
+    def _capture(self, argv: list[str]) -> None:
+        """Read-only commands render inside the output pane, like the Rust cockpit."""
+        from .dashboard import run_captured
+
+        title = " ".join(argv)
+        self.call_from_thread(self._set_busy, title)
+        text = run_captured(self.cli_prefix, argv)
+        self.call_from_thread(self._show_output, text, title)
+
+    def _set_busy(self, title: str) -> None:
+        self.busy = title
+        self._render_footer()
+
+    def _show_output(self, text: str, title: str) -> None:
+        self.busy = None
+        self.output_text = text
+        self.output_title = title
+        self._focus_pane("output")
+        self._render_output()
+        self._render_footer()
+
+    def action_show_logs(self) -> None:
+        self.output_text = None
+        self.output_title = ""
+        self.snapshot = load_snapshot()
+        self._focus_pane("output")
+        self._render_output()
+        self._render_footer()
 
     # -- actions --------------------------------------------------------
 

@@ -183,7 +183,7 @@ termux-sync tui
 Keys: `b` backup, `r` restore, `l` refresh, `d` delete, `s` setup, `Tab` switch pane, `Enter` run, `q` quit.
 Inside an operation: `Esc` cancel, `r` retry, `?` help.
 
-The dashboard mirrors the Rust cockpit: a gradient hero with storage and backup badges, cards for backups, stored size, packages, and the auto-backup schedule, an actions pane, the backup table (name, age, size, relative size bar, packages), and the tail of `sync.log`.
+The dashboard mirrors the Rust cockpit: a gradient hero with storage and backup badges, cards for backups, stored size, packages, and the auto-backup schedule, an actions pane, the backup table (name, age, size, relative size bar, packages), and the tail of `sync.log`. Read-only actions (`List backups`, `Disk check`) run captured and render in the output pane without leaving the TUI; setup, schedule, and delete hand the terminal over to the CLI.
 
 The TUI drives the same engine as the commands above: it starts `termux-sync backup --json-events` (or `restore --json-events`) as a child process and follows its JSON Lines events, so human output stays on stderr and stdout stays machine-readable.
 

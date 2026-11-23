@@ -67,3 +67,9 @@ def test_default_config_values_are_sane():
     assert ts.DEFAULT_CONFIG["max_backups"] > 0
     assert ts.DEFAULT_CONFIG["encrypt"] is False
     assert ts.DEFAULT_CONFIG["github_token"] == ""
+
+
+def test_engine_logs_stay_inside_the_test_sandbox():
+    ts.log("INFO", "isolated marker")
+    assert ts.LOG_FILE.exists()
+    assert "isolated marker" in ts.LOG_FILE.read_text()
