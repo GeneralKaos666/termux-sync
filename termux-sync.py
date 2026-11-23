@@ -238,6 +238,53 @@ class EventProgress:
         emit_event("progress", **fields)
 
 
+_RCLONE_TRANSFERRED = re.compile(
+    r"Transferred:\s+([\d.]+)\s*([A-Za-z]+)\s*/\s*([\d.]+)\s*([A-Za-z]+)"
+)
+_RCLONE_UNITS = {
+    "B": 1,
+    "Bytes": 1,
+    "KiB": 1024,
+    "MiB": 1024 ** 2,
+    "GiB": 1024 ** 3,
+    "TiB": 1024 ** 4,
+    "kB": 1000,
+    "MB": 1000 ** 2,
+    "GB": 1000 ** 3,
+    "TB": 1000 ** 4,
+}
+
+
+def _bytes_from_rclone(value: str, unit: str) -> int:
+    factor = _RCLONE_UNITS.get(unit)
+    if factor is None:
+        raise ValueError(f"unknown rclone unit: {unit}")
+    return int(float(value) * factor)
+
+
+def _rclone_progress(args: list[str], stage: str):
+    if EVENTS is None:
+        subprocess.run(args, check=True, capture_output=True)
+        return
+
+    process = subprocess.Popen(args, stderr=subprocess.PIPE, text=True)
+    last = None
+    for line in process.stderr:
+        match = _RCLONE_TRANSFERRED.search(line)
+        if not match:
+            continue
+        current = _bytes_from_rclone(match.group(1), match.group(2))
+        total = _bytes_from_rclone(match.group(3), match.group(4))
+        if (current, total) == last:
+            continue
+        last = (current, total)
+        emit_event("progress", stage=stage, current=current, total=total,
+                   unit="bytes")
+    code = process.wait()
+    if code != 0:
+        raise RuntimeError(f"rclone exited with {code}")
+
+
 def event_confirmation() -> bool:
     """Read one JSON confirmation line from stdin for restore."""
     line = sys.stdin.readline()
@@ -894,9 +941,10 @@ class GDriveStorage:
     def upload(self, backup_dir: Path, backup_name: str, progress: Progress) -> str:
         task = progress.add_task("[cyan]Uploading to Google Drive…", total=None)
         remote = self._remote_path(backup_name)
-        subprocess.run(
-            ["rclone", "copy", str(backup_dir), remote, "--progress"],
-            check=True, capture_output=True
+        _rclone_progress(
+            ["rclone", "copy", str(backup_dir), remote,
+             "--stats", "500ms", "--stats-one-line"],
+            "upload",
         )
         progress.update(task, total=1, completed=1, description="[green]Uploaded to Google Drive ✓")
         return remote
@@ -938,9 +986,10 @@ class GDriveStorage:
     def download(self, backup_name: str, dest: Path, progress: Progress):
         task = progress.add_task("[cyan]Downloading from Google Drive…", total=None)
         dest.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["rclone", "copy", self._remote_path(backup_name), str(dest)],
-            check=True, capture_output=True
+        _rclone_progress(
+            ["rclone", "copy", self._remote_path(backup_name), str(dest),
+             "--stats", "500ms", "--stats-one-line"],
+            "download",
         )
         progress.update(task, total=1, completed=1, description="[green]Downloaded ✓")
 
@@ -1192,6 +1241,9 @@ class GitHubStorage:
                 with urllib.request.urlopen(req, timeout=120) as resp:
                     result = json.loads(resp.read())
                 progress.update(progress_task, completed=file_size)
+                emit_event("progress", stage="upload", current=file_size,
+                           total=file_size, unit="bytes",
+                           detail=local_path.name)
                 return result
             except urllib.error.HTTPError as e:
                 # (HTTPError is a URLError subclass, so it must be handled first)
@@ -1312,6 +1364,7 @@ class GitHubStorage:
         total_bytes = sum(a.get("size", 0) for a in assets) or 1
         task        = progress.add_task("[cyan]Downloading…", total=total_bytes)
         done_bytes  = 0
+        download_events = EventProgress("download")
 
         for n, asset in enumerate(assets, 1):
             url  = self._asset_url(asset["id"])
@@ -1337,7 +1390,13 @@ class GitHubStorage:
                                 task, completed=min(done_bytes + got, total_bytes),
                                 description=f"[cyan]{tag}  {escape(shown)}",
                             )
+                            download_events.emit(
+                                done_bytes + got, total_bytes, "bytes", name
+                            )
                     done_bytes += got
+                    download_events.emit(
+                        done_bytes, total_bytes, "bytes", name, force=True
+                    )
                     last_err = None
                     break
                 except Exception as e:

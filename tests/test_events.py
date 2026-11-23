@@ -1,5 +1,6 @@
 import io
 import json
+import urllib.request
 
 import pytest
 
@@ -213,3 +214,50 @@ def test_gdrive_manifest_fetch_uses_rclone_cat(monkeypatch):
     storage = ts.GDriveStorage({"gdrive_folder_id": ""})
     assert storage.fetch_manifest("b1")["name"] == "b1"
     assert any("cat" in call for call in calls)
+
+
+def test_rclone_progress_emits_bytes(events, monkeypatch):
+    class Fake:
+        stderr = iter([
+            "Transferred: 5 MiB / 10 MiB, 50%",
+            "Transferred: 10 MiB / 10 MiB, 100%",
+        ])
+        returncode = 0
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(ts.subprocess, "Popen", lambda *a, **k: Fake())
+    ts._rclone_progress(["rclone", "copy", "a", "b"], "download")
+    progress = [e for e in parsed(events) if e["event"] == "progress"]
+    assert progress[-1]["current"] == 10 * 1024 * 1024
+    assert progress[-1]["total"] == 10 * 1024 * 1024
+
+
+def test_rclone_bytes_units():
+    assert ts._bytes_from_rclone("5", "MiB") == 5 * 1024 * 1024
+    assert ts._bytes_from_rclone("1.5", "GiB") == int(1.5 * 1024**3)
+    assert ts._bytes_from_rclone("7", "B") == 7
+
+
+def test_github_upload_emits_progress(events, tmp_path, monkeypatch):
+    storage = ts.GitHubStorage({"github_token": "t", "github_repo": "o/r"})
+    part = tmp_path / "home.tar.gz.part0000"
+    part.write_bytes(b"x" * 32)
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def read(self):
+            return b"{}"
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: FakeResponse())
+    with ts.make_progress() as progress:
+        task = progress.add_task("upload", total=32)
+        storage._upload_one_asset(1, part, task, progress)
+
+    progress_events = [e for e in parsed(events) if e["event"] == "progress"]
+    assert progress_events[-1]["stage"] == "upload"
+    assert progress_events[-1]["current"] == 32
