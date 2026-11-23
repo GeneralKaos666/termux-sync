@@ -238,6 +238,10 @@ pub struct App {
     pub op_result_handled: bool,
     pub pending_select: Option<String>,
     pub pending_confirm: Option<Action>,
+    pub pending_label: Option<String>,
+    pub label_text: String,
+    pub label_yes: Rect,
+    pub label_no: Rect,
     pub confirm_yes: Rect,
     pub confirm_no: Rect,
     pub actions_area: Rect,
@@ -292,6 +296,10 @@ impl App {
             op_result_handled: false,
             pending_select: None,
             pending_confirm: None,
+            pending_label: None,
+            label_text: String::new(),
+            label_yes: Rect::default(),
+            label_no: Rect::default(),
             confirm_yes: Rect::default(),
             confirm_no: Rect::default(),
             actions_area: Rect::default(),
@@ -394,6 +402,10 @@ impl App {
             }
             return;
         }
+        if self.pending_label.is_some() {
+            self.handle_label_key(code, modifiers);
+            return;
+        }
         if self.operation.is_some() {
             self.handle_operation_key(code, modifiers);
             return;
@@ -444,6 +456,41 @@ impl App {
 
     fn switch_focus(&mut self, focus: Focus) {
         self.focus = focus;
+    }
+
+    fn handle_label_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        if modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Char('c') | KeyCode::Char('C'))
+        {
+            self.pending_label = None;
+            self.label_text.clear();
+            self.should_quit = true;
+            return;
+        }
+        match code {
+            KeyCode::Enter => {
+                let label = self.label_text.trim().to_string();
+                self.pending_label = None;
+                self.label_text.clear();
+                self.start_operation(Kind::Backup, "backup", backup_command(&label));
+            }
+            KeyCode::Esc => {
+                self.pending_label = None;
+                self.label_text.clear();
+                self.status = "backup cancelled".to_string();
+            }
+            KeyCode::Backspace => {
+                self.label_text.pop();
+            }
+            KeyCode::Char(ch)
+                if !ch.is_control()
+                    && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && self.label_text.len() < 64 =>
+            {
+                self.label_text.push(ch);
+            }
+            _ => {}
+        }
     }
 
     fn handle_operation_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
@@ -784,6 +831,19 @@ impl App {
 
     pub fn handle_mouse(&mut self, column: u16, row: u16) {
         let point = Position::new(column, row);
+        if self.pending_label.is_some() {
+            if self.label_yes.contains(point) {
+                let label = self.label_text.trim().to_string();
+                self.pending_label = None;
+                self.label_text.clear();
+                self.start_operation(Kind::Backup, "backup", backup_command(&label));
+            } else if self.label_no.contains(point) {
+                self.pending_label = None;
+                self.label_text.clear();
+                self.status = "backup cancelled".to_string();
+            }
+            return;
+        }
         if let Some(action) = self.pending_confirm {
             if self.confirm_yes.contains(point) {
                 self.pending_confirm = None;
@@ -901,7 +961,9 @@ impl App {
     pub fn run(&mut self, action: Action) {
         match action {
             Action::Backup => {
-                self.start_operation(Kind::Backup, "backup", vec!["backup".to_string()])
+                self.pending_label = Some("backup".to_string());
+                self.label_text.clear();
+                self.status = "label this backup, or press Enter to continue".to_string();
             }
             Action::Restore => {
                 if let Some(name) = self.selected_backup().map(|backup| backup.name.clone()) {
@@ -1086,6 +1148,19 @@ impl App {
     }
 }
 
+pub fn backup_command(label: &str) -> Vec<String> {
+    let label = label.trim();
+    if label.is_empty() {
+        vec!["backup".to_string()]
+    } else {
+        vec![
+            "backup".to_string(),
+            "--label".to_string(),
+            label.to_string(),
+        ]
+    }
+}
+
 pub fn restore_command(name: &str) -> Vec<String> {
     vec![
         "restore".to_string(),
@@ -1234,6 +1309,23 @@ mod tests {
 
         app.run(Action::ClearCache);
         assert_eq!(app.pending_confirm, Some(Action::ClearCache));
+    }
+
+    #[test]
+    fn backup_command_includes_clean_label() {
+        assert_eq!(
+            backup_command("before-upgrade"),
+            vec!["backup", "--label", "before-upgrade"]
+        );
+        assert_eq!(backup_command(""), vec!["backup"]);
+    }
+
+    #[test]
+    fn backup_action_opens_label_prompt() {
+        let mut app = App::with_snapshot(snapshot());
+        app.run(Action::Backup);
+        assert!(app.pending_label.is_some());
+        assert!(app.operation.is_none());
     }
 
     #[test]
