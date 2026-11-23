@@ -800,6 +800,12 @@ class LocalStorage:
         progress.update(task, total=1, completed=1, description="[green]Saved locally ✓")
         return str(dest)
 
+    def fetch_manifest(self, backup_name: str):
+        name = _clean_backup_name(backup_name)
+        if not name:
+            return None
+        return read_manifest(self.root / name)
+
     def list_backups(self) -> list[dict]:
         if not self.root.exists():
             return []
@@ -894,6 +900,19 @@ class GDriveStorage:
         )
         progress.update(task, total=1, completed=1, description="[green]Uploaded to Google Drive ✓")
         return remote
+
+    def fetch_manifest(self, backup_name: str):
+        name = _clean_backup_name(backup_name)
+        if not name:
+            return None
+        try:
+            result = subprocess.run(
+                ["rclone", "cat", self._remote_path(f"{name}/manifest.json")],
+                capture_output=True, text=True, check=True,
+            )
+            return json.loads(result.stdout)
+        except Exception:
+            return None
 
     def list_backups(self) -> list[dict]:
         try:
@@ -1240,6 +1259,15 @@ class GitHubStorage:
         progress.update(task, total=1, completed=1,
                         description="[green]Uploaded to GitHub Releases ✓")
         return release_url
+
+    def fetch_manifest(self, backup_name: str):
+        name = _clean_backup_name(backup_name)
+        if not name:
+            return None
+        for manifest in self.list_backups():
+            if manifest.get("name") == name and manifest.get("files") is not None:
+                return manifest
+        return None
 
     def list_backups(self) -> list[dict]:
         backups = []
@@ -1821,11 +1849,11 @@ def _cmd_restore_events(cfg: dict, backup_name: str):
     remote_downloaded = False
 
     try:
-        if cfg.get("storage") == "local":
-            root = Path(cfg["local_path"]).expanduser()
-            manifest = read_manifest(root / name)
-        else:
-            # Backends without a manifest-only fetch use the existing download path.
+        fetch_manifest = getattr(storage, "fetch_manifest", None)
+        if fetch_manifest is not None:
+            manifest = fetch_manifest(name)
+        if manifest is None and cfg.get("storage") != "local":
+            # Backends without a usable manifest-only fetch use the download path.
             console.print("  [bold]Fetching backup metadata…[/bold]")
             event_stage("download", "Download", 2, total_stages, "start")
             with make_progress(transient=True, percent=True) as progress:

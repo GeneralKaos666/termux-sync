@@ -188,3 +188,28 @@ def test_list_emits_backup_events(events, local_cfg, termux_tree):
     assert items[0]["storage"] == "local"
     result = [e for e in parsed(events) if e["event"] == "result"][0]
     assert result["count"] == 1
+
+
+def test_local_manifest_fetch_does_not_copy_archives(local_cfg, termux_tree, monkeypatch):
+    manifest = make_backup(local_cfg)
+    storage = ts.LocalStorage(local_cfg)
+    monkeypatch.setattr(
+        storage,
+        "download",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("download called")),
+    )
+    assert storage.fetch_manifest(manifest["name"])["name"] == manifest["name"]
+
+
+def test_gdrive_manifest_fetch_uses_rclone_cat(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return type("R", (), {"stdout": '{"name":"b1"}'})()
+
+    monkeypatch.setattr(ts.subprocess, "run", fake_run)
+    monkeypatch.setattr(ts.shutil, "which", lambda name: "/bin/rclone")
+    storage = ts.GDriveStorage({"gdrive_folder_id": ""})
+    assert storage.fetch_manifest("b1")["name"] == "b1"
+    assert any("cat" in call for call in calls)
