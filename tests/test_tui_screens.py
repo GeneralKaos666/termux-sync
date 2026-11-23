@@ -1,10 +1,13 @@
 import json
 from pathlib import Path
 
+import pytest
 from textual.widgets import DataTable
 
 from termux_sync.tui.app import TermuxSyncApp
 from termux_sync.tui.dashboard import load_snapshot
+from termux_sync.tui.operation import OperationScreen
+from termux_sync.tui.widgets import StageStepper
 
 
 def write_backup(root: Path, name: str, packages=2, size=1024):
@@ -72,3 +75,91 @@ async def test_dashboard_empty_state(tmp_path, monkeypatch):
     async with app.run_test() as pilot:
         await pilot.pause()
         assert "No backups yet" in str(app.screen.query_one("#empty").content)
+
+
+class FakeRunner:
+    """Stands in for a real child process so screen tests never spawn one."""
+
+    def __init__(self):
+        self.cancelled = 0
+        self.confirmed = []
+        self.pid = 4242
+
+    def start(self, command, name=""):
+        return None
+
+    def confirm(self, text="RESTORE"):
+        self.confirmed.append(text)
+
+    def cancel(self):
+        self.cancelled += 1
+
+    def wait(self, timeout=None):
+        return 0
+
+    def close(self):
+        return None
+
+
+@pytest.fixture
+def fake_runner(monkeypatch):
+    runner = FakeRunner()
+    monkeypatch.setattr("termux_sync.tui.operation.OperationRunner", lambda *a, **k: runner)
+    return runner
+
+
+async def test_operation_screen_shows_stages_and_log(tmp_path, monkeypatch, fake_runner):
+    app = make_app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        screen = OperationScreen(cli_prefix=["python"], command="backup")
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.handle_event({"event": "start", "command": "backup", "name": "b1", "storage": "local"})
+        screen.handle_event({"event": "stage", "id": "packages", "label": "Packages", "state": "complete", "index": 1, "total": 7})
+        screen.handle_event({"event": "log", "level": "INFO", "message": "Collected 1947 packages"})
+        await pilot.pause()
+        assert "Packages" in str(screen.query_one(StageStepper).renderable)
+        assert "1947" in str(screen.query_one("#log").lines[-1])
+
+
+async def test_operation_screen_narrow_layout_keeps_current_stage(tmp_path, monkeypatch, fake_runner):
+    app = make_app(tmp_path, monkeypatch)
+    async with app.run_test(size=(48, 12)) as pilot:
+        screen = OperationScreen(cli_prefix=["python"], command="backup")
+        app.push_screen(screen)
+        screen.handle_event({"event": "stage", "id": "archive:home", "label": "Home", "state": "start", "index": 3, "total": 7})
+        await pilot.pause()
+        text = str(screen.query_one(StageStepper).renderable)
+        assert "Home" in text and "3/7" in text
+
+
+async def test_operation_screen_survives_tiny_terminal(tmp_path, monkeypatch, fake_runner):
+    app = make_app(tmp_path, monkeypatch)
+    async with app.run_test(size=(40, 10)) as pilot:
+        screen = OperationScreen(cli_prefix=["python"], command="backup")
+        app.push_screen(screen)
+        screen.handle_event({"event": "stage", "id": "packages", "label": "Packages", "state": "start", "index": 1, "total": 7})
+        await pilot.pause()
+        assert screen.state.status == "running"
+
+
+async def test_operation_screen_shows_failure_card(tmp_path, monkeypatch, fake_runner):
+    app = make_app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        screen = OperationScreen(cli_prefix=["python"], command="backup")
+        app.push_screen(screen)
+        screen.handle_event({"event": "error", "message": "Upload failed", "hint": "Check token", "exit_code": 1})
+        await pilot.pause()
+        assert app.screen.query_one("#failure").display is True
+        assert "Check token" in str(app.screen.query_one("#failure").renderable)
+
+
+async def test_child_death_without_events_shows_failure(tmp_path, monkeypatch, fake_runner):
+    app = make_app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        screen = OperationScreen(cli_prefix=["python"], command="backup")
+        app.push_screen(screen)
+        screen.handle_exit(3)
+        await pilot.pause()
+        assert screen.state.status == "failed"
+        assert screen.state.failure["exit_code"] == 3

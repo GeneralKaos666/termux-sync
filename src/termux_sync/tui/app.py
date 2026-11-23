@@ -82,7 +82,9 @@ class TermuxSyncApp(App):
         self.refresh_dashboard()
 
     def action_backup(self) -> None:
-        self.notify("Backup cockpit is not wired yet.")
+        from .operation import OperationScreen
+
+        self.push_screen(OperationScreen(self.cli_prefix, "backup"))
 
     def action_restore(self) -> None:
         self.notify("Restore cockpit is not wired yet.")
