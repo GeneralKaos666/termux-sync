@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::data;
+use crate::data::{self, Backup};
 
 const MAX_LINE: usize = 64 * 1024;
 const LOG_LIMIT: usize = 200;
@@ -151,6 +151,7 @@ pub enum Event {
         name: String,
         storage: String,
     },
+    Backup(Backup),
     Stage {
         id: String,
         label: String,
@@ -218,6 +219,16 @@ pub fn parse_event(line: &str) -> Result<Event, String> {
             name: text("name"),
             storage: text("storage"),
         },
+        "backup" => Event::Backup(Backup {
+            name: text("name"),
+            date: text("date"),
+            label: text("label"),
+            packages: number("packages").unwrap_or(0) as usize,
+            size: number("size").unwrap_or(0),
+            version: text("version"),
+            compression: text("compression").to_uppercase(),
+            modified: None,
+        }),
         "stage" => Event::Stage {
             id: text("id"),
             label: text("label"),
@@ -359,6 +370,35 @@ enum Msg {
     Malformed(String),
     Stderr(String),
     Eof,
+}
+
+pub fn collect_backups() -> Result<Vec<Backup>, String> {
+    let mut command = data::cli_command(&["list".to_string(), "--json-events".to_string()]);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = command
+        .output()
+        .map_err(|error| format!("cannot run termux-sync list: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+
+    let mut backups = Vec::new();
+    let mut saw_result = false;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        match parse_event(line) {
+            Ok(Event::Backup(backup)) => backups.push(backup),
+            Ok(Event::Result(_)) => saw_result = true,
+            Ok(_) => {}
+            Err(error) => return Err(format!("invalid list event: {error}")),
+        }
+    }
+    if !saw_result {
+        return Err("list event stream ended without a result".to_string());
+    }
+    Ok(backups)
 }
 
 pub fn supports_flag(flag: &str) -> bool {
@@ -742,6 +782,7 @@ impl Operation {
                     exit_code: None,
                 });
             }
+            Event::Backup(_) => {}
             Event::Unknown => {}
         }
     }
@@ -1120,5 +1161,18 @@ mod tests {
             let total: f32 = stage_defs(kind).iter().map(|(_, _, weight)| weight).sum();
             assert_eq!(total, 100.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod list_event_tests {
+    use super::*;
+
+    #[test]
+    fn parses_backup_list_event() {
+        let event = parse_event(r#"{"v":1,"event":"backup","name":"b1","date":"2026-01-01T00:00:00","label":"x","packages":3,"size":10,"version":"1.3.9","compression":"gz","storage":"github"}"#).unwrap();
+        assert!(
+            matches!(event, Event::Backup(ref backup) if backup.name == "b1" && backup.packages == 3)
+        );
     }
 }

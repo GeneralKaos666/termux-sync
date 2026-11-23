@@ -2189,6 +2189,22 @@ def cmd_list(cfg: dict):
     storage = get_storage(cfg)
     backups = storage.list_backups()
 
+    if EVENTS is not None:
+        for backup in backups:
+            files_info = backup.get("files", {}) or {}
+            emit_event(
+                "backup",
+                name=str(backup.get("name", "")),
+                date=str(backup.get("date", "")),
+                label=str(backup.get("label", "") or ""),
+                packages=len(backup.get("packages", []) or []),
+                size=sum(v.get("size", 0) for v in files_info.values()),
+                version=str(backup.get("version", "")),
+                compression=str(backup.get("compression", "")),
+                storage=str(cfg.get("storage", "")),
+            )
+        emit_event("result", ok=True, count=len(backups))
+
     if not backups:
         console.print("  [yellow]No backups found.[/yellow]")
         return

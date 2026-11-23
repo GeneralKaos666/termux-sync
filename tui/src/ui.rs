@@ -1716,6 +1716,15 @@ mod tests {
     }
 
     #[test]
+    fn remote_warning_does_not_claim_list_is_outside() {
+        let mut app = app();
+        app.snapshot.config.storage = "github".into();
+        app.snapshot.warning = Some("GITHUB storage: press L to list backups in the TUI".into());
+        let frame = render_app(&mut app, 80, 24);
+        assert!(!frame.contains("in the terminal"));
+    }
+
+    #[test]
     fn warning_state_labels_the_warn_chip_and_status() {
         let mut app = app();
         app.snapshot.warning = Some("GITHUB storage".to_string());

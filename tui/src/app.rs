@@ -147,11 +147,13 @@ pub const ACTIONS: &[ActionItem] = &[
 pub enum Task {
     Refresh,
     Command(Vec<String>),
+    ListBackups,
 }
 
 pub enum WorkerMsg {
     Refreshed(Snapshot),
     Output { title: String, text: String },
+    Backups(Vec<Backup>),
 }
 
 #[derive(Default)]
@@ -181,6 +183,7 @@ impl Worker {
         std::thread::spawn(move || {
             let result = match task {
                 Task::Refresh => Ok(WorkerMsg::Refreshed(data::load_snapshot())),
+                Task::ListBackups => crate::ops::collect_backups().map(WorkerMsg::Backups),
                 Task::Command(args) => data::run_captured(&args).map(|text| WorkerMsg::Output {
                     title: args.join(" "),
                     text,
@@ -915,7 +918,7 @@ impl App {
                     self.status = "no backup selected".to_string();
                 }
             }
-            Action::List => self.start_task(Task::Command(vec!["list".to_string()])),
+            Action::List => self.start_task(Task::ListBackups),
             Action::Logs => {
                 self.output = data::tail_log(200);
                 self.output_offset = 0;
@@ -988,6 +991,7 @@ impl App {
         let label = match &task {
             Task::Refresh => "refreshing".to_string(),
             Task::Command(args) => format!("termux-sync {}", args.join(" ")),
+            Task::ListBackups => "listing backups".to_string(),
         };
         let show_overlay = matches!(&task, Task::Command(_));
         if self.worker.start(task) {
@@ -1021,6 +1025,7 @@ impl App {
         }
         match result {
             Ok(WorkerMsg::Refreshed(snapshot)) => self.apply_snapshot(snapshot),
+            Ok(WorkerMsg::Backups(backups)) => self.apply_backup_list(backups),
             Ok(WorkerMsg::Output { title, text }) => {
                 self.output.clear();
                 self.output.push(format!("$ termux-sync {title}"));
@@ -1038,6 +1043,16 @@ impl App {
             }
         }
         true
+    }
+
+    pub fn apply_backup_list(&mut self, backups: Vec<Backup>) {
+        let count = backups.len();
+        self.snapshot.backups = backups;
+        self.snapshot.warning = None;
+        self.backup_state.select((count > 0).then_some(0));
+        self.switch_focus(Focus::Backups);
+        self.status = format!("{count} backup(s)");
+        self.op_result_handled = false;
     }
 
     pub fn apply_snapshot(&mut self, snapshot: Snapshot) {
@@ -1423,5 +1438,29 @@ mod tests {
             visible: true,
         });
         assert_eq!(app.task_progress(), 1.0);
+    }
+}
+
+#[cfg(test)]
+mod list_apply_tests {
+    use super::*;
+
+    #[test]
+    fn applying_a_list_replaces_backups_and_clears_warning() {
+        let mut app = App::with_snapshot(Snapshot::default());
+        app.snapshot.warning = Some("remote".into());
+        app.apply_backup_list(vec![Backup {
+            name: "b1".into(),
+            date: "2026-01-01".into(),
+            label: String::new(),
+            packages: 1,
+            size: 2,
+            version: "1.3.9".into(),
+            compression: "GZ".into(),
+            modified: None,
+        }]);
+        assert_eq!(app.snapshot.backups.len(), 1);
+        assert!(app.snapshot.warning.is_none());
+        assert_eq!(app.focus, Focus::Backups);
     }
 }

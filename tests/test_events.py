@@ -174,3 +174,17 @@ def test_clear_cache_yes_removes_without_prompts(tmp_path, monkeypatch):
     ts.cmd_clear_cache(assume_yes=True)
     assert cache.exists()
     assert list(cache.iterdir()) == []
+
+
+def test_list_emits_backup_events(events, local_cfg, termux_tree):
+    make_backup(local_cfg)
+    events.seek(0)
+    events.truncate(0)
+    ts.cmd_list(local_cfg)
+    items = [e for e in parsed(events) if e["event"] == "backup"]
+    assert len(items) == 1
+    assert items[0]["name"].startswith("termux_backup_")
+    assert items[0]["packages"] == 2
+    assert items[0]["storage"] == "local"
+    result = [e for e in parsed(events) if e["event"] == "result"][0]
+    assert result["count"] == 1
