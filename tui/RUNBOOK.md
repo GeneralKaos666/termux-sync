@@ -14,11 +14,18 @@ Operational recovery notes for `termux-sync-tui`.
 
 At start of an operation the TUI probes the installed `termux-sync`:
 
-- missing `--json-events`: backup and restore refuse before starting.
+- missing `--json-events`: backup and restore refuse before starting; `L`
+  falls back to captured text output.
 - missing `--yes`: delete and clear-cache fall back to the terminal handoff and
   the CLI asks its own confirmation.
 
 Update `termux-sync` before using the cockpit if backup or restore refuses.
+
+## Ctrl+C
+
+On the dashboard, Ctrl+C quits. During a backup it cancels through the same
+SIGINT cleanup path. During a protected restore it is refused with a message.
+Use `q` after an operation completes to leave the TUI.
 
 ## Backup cancel
 
@@ -50,7 +57,8 @@ Closing the terminal externally is outside the guarantee.
 
 ## Verification states
 
-- `VERIFIED`: local copy checksums matched, or GitHub stream digest matched.
+- `VERIFIED`: stored local archives were re-read and hashed, or the GitHub
+  stream digest matched.
 - `CORRUPT`: local checksum mismatch. Backups are not deleted automatically.
 - `SKIPPED`: the backend cannot prove integrity (for example Google Drive).
   Treat as unverified, not as failed.

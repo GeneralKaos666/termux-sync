@@ -196,9 +196,18 @@ pub fn load_local_backups(root: &Path) -> Result<Vec<Backup>, String> {
     Ok(backups)
 }
 
+pub fn is_safe_backup_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.trim() == name
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+}
+
 pub fn parse_manifest(value: &Value) -> Option<Backup> {
     let name = value.get("name")?.as_str()?.to_string();
-    if name.is_empty() {
+    if !is_safe_backup_name(&name) {
         return None;
     }
     let label = value
@@ -493,6 +502,13 @@ mod tests {
 
         assert!(parse_log_line("plain text").is_none());
         assert!(parse_log_line("[2026-11-21 01:17:33] no level").is_none());
+    }
+
+    #[test]
+    fn unsafe_manifest_name_is_skipped() {
+        let mut value = manifest();
+        value["name"] = serde_json::json!("../other");
+        assert!(parse_manifest(&value).is_none());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import io
 import json
-import urllib.request
+import http.client
 
 import pytest
 
@@ -246,14 +246,36 @@ def test_github_upload_emits_progress(events, tmp_path, monkeypatch):
     part.write_bytes(b"x" * 32)
 
     class FakeResponse:
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            return False
+        status = 200
+        reason = "OK"
+        headers = {}
+
         def read(self):
             return b"{}"
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: FakeResponse())
+    class FakeConnection:
+        def __init__(self, *args, **kwargs):
+            self.sent = 0
+
+        def putrequest(self, *args, **kwargs):
+            pass
+
+        def putheader(self, *args, **kwargs):
+            pass
+
+        def endheaders(self):
+            pass
+
+        def send(self, data):
+            self.sent += len(data)
+
+        def getresponse(self):
+            return FakeResponse()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(http.client, "HTTPSConnection", FakeConnection)
     with ts.make_progress() as progress:
         task = progress.add_task("upload", total=32)
         storage._upload_one_asset(1, part, task, progress)
@@ -263,7 +285,7 @@ def test_github_upload_emits_progress(events, tmp_path, monkeypatch):
     assert progress_events[-1]["current"] == 32
 
 
-def test_local_upload_records_checksums_and_verifies_without_rehash(tmp_path, monkeypatch):
+def test_local_upload_records_checksums_and_verifies_stored_copy(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.tar.gz").write_bytes(b"abc")
@@ -274,9 +296,6 @@ def test_local_upload_records_checksums_and_verifies_without_rehash(tmp_path, mo
     checksum = ts.hashlib.sha256(b"abc").hexdigest()
     assert storage.stored_checksums["a.tar.gz"] == checksum
 
-    monkeypatch.setattr(
-        ts, "sha256", lambda *a, **k: (_ for _ in ()).throw(AssertionError("rehash"))
-    )
     ok, details = ts._verify_local_backup(
         dest / "b1",
         {"home": {"archive": "a.tar.gz", "checksum": checksum}},
@@ -319,3 +338,119 @@ def test_malformed_manifest_archive_is_rejected():
     manifest = json.loads(ts.Path("tests/fixtures/github_manifest.json").read_text())
     archive = manifest["files"]["home"]["archive"]
     assert ts._clean_backup_name(archive) != archive
+
+
+def test_list_skips_unsafe_backup_names(events, local_cfg, tmp_path):
+    root = ts.Path(local_cfg["local_path"])
+    root.mkdir(parents=True, exist_ok=True)
+    unsafe = root / "unsafe"
+    unsafe.mkdir()
+    (unsafe / "manifest.json").write_text(
+        '{"name":"../B","date":"2026-01-01T00:00:00","packages":[],"files":{}}'
+    )
+    ts.cmd_list(local_cfg)
+    assert [e for e in parsed(events) if e["event"] == "backup"] == []
+
+
+def test_delete_rejects_unsafe_name(local_cfg, termux_tree):
+    manifest = make_backup(local_cfg)
+    target = ts.Path(local_cfg["local_path"]) / manifest["name"]
+    ts.cmd_delete(local_cfg, backup_name="../" + manifest["name"], assume_yes=True)
+    assert target.exists()
+
+
+def test_local_verify_catches_same_size_corruption(tmp_path):
+    root = tmp_path / "b1"
+    root.mkdir()
+    (root / "a.tar.gz").write_bytes(b"abd")
+    expected = ts.hashlib.sha256(b"abc").hexdigest()
+    ok, details = ts._verify_local_backup(
+        root,
+        {"home": {"archive": "a.tar.gz", "checksum": expected, "size": 3}},
+        {"a.tar.gz": expected},
+    )
+    assert not ok
+    assert "checksum failed" in details
+
+
+def test_copy_onto_itself_is_refused(tmp_path):
+    source = tmp_path / "a.tar.gz"
+    source.write_bytes(b"data")
+    with pytest.raises(ts.shutil.SameFileError):
+        ts._copy_with_sha(source, source)
+    assert source.read_bytes() == b"data"
+
+
+def test_upload_to_backup_temp_dir_is_refused(tmp_path, monkeypatch):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.tar.gz").write_bytes(b"data")
+    storage = ts.LocalStorage({"local_path": str(src.parent)})
+    with ts.make_progress() as progress:
+        with pytest.raises(RuntimeError):
+            storage.upload(src, src.name, progress)
+    assert (src / "a.tar.gz").read_bytes() == b"data"
+
+
+def test_corrupt_local_manifest_does_not_break_list(events, local_cfg):
+    root = ts.Path(local_cfg["local_path"])
+    bad = root / "bad"
+    bad.mkdir(parents=True)
+    (bad / "manifest.json").write_text("{not json")
+    ts.cmd_list(local_cfg)
+    assert [e for e in parsed(events) if e["event"] == "backup"] == []
+
+
+def test_restore_rejects_invalid_manifest_shape(events, local_cfg, monkeypatch):
+    root = ts.Path(local_cfg["local_path"]) / "termux_backup_bad"
+    root.mkdir(parents=True)
+    (root / "manifest.json").write_text(
+        '{"name":"termux_backup_bad","files":[],"packages":"nope"}'
+    )
+    monkeypatch.setattr(ts.sys, "stdin", io.StringIO('{"confirm":"RESTORE"}\n'))
+    ts.cmd_restore(local_cfg, backup_name="termux_backup_bad")
+    events_list = parsed(events)
+    assert any(e["event"] == "error" for e in events_list)
+    assert all(e.get("id") != "extract:home" for e in events_list)
+
+
+def test_restore_rejects_empty_archive_list(events, local_cfg, monkeypatch):
+    root = ts.Path(local_cfg["local_path"]) / "termux_backup_empty"
+    root.mkdir(parents=True)
+    (root / "manifest.json").write_text(
+        '{"name":"termux_backup_empty","files":{},"packages":[]}'
+    )
+    monkeypatch.setattr(ts.sys, "stdin", io.StringIO('{"confirm":"RESTORE"}\n'))
+    ts.cmd_restore(local_cfg, backup_name="termux_backup_empty")
+    assert any(e["event"] == "error" for e in parsed(events))
+
+
+def test_remote_restore_plan_uses_manifest_fetch_without_download(
+    events, local_cfg, monkeypatch
+):
+    manifest = {
+        "name": "termux_backup_remote",
+        "date": "2026-01-01T00:00:00",
+        "packages": ["git"],
+        "files": {"home": {"archive": "home.tar.gz", "size": 1, "checksum": "x"}},
+        "version": "1.3.9",
+        "compression": "gz",
+    }
+
+    class FakeStorage:
+        def fetch_manifest(self, name):
+            return manifest
+
+        def download(self, *args, **kwargs):
+            raise AssertionError("download before plan")
+
+    cfg = dict(local_cfg)
+    cfg["storage"] = "github"
+    monkeypatch.setattr(ts, "get_storage", lambda cfg: FakeStorage())
+    monkeypatch.setattr(ts.sys, "stdin", io.StringIO('{"confirm":"CANCEL"}\n'))
+
+    ts.cmd_restore(cfg, backup_name="termux_backup_remote")
+    events_list = parsed(events)
+    assert any(e["event"] == "plan" for e in events_list)
+    assert not any(e["event"] == "download" for e in events_list)
+    assert any(e["event"] == "cancelled" for e in events_list)

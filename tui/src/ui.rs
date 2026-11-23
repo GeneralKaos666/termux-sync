@@ -1055,6 +1055,19 @@ fn diff_counts(plan: &Plan) -> Option<String> {
     ))
 }
 
+fn history_age(now: u64, at: u64) -> String {
+    let seconds = now.saturating_sub(at);
+    if seconds < 60 {
+        "now".to_string()
+    } else if seconds < 3_600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h", seconds / 3_600)
+    } else {
+        format!("{}d", seconds / 86_400)
+    }
+}
+
 fn fmt_elapsed(duration: std::time::Duration) -> String {
     let seconds = duration.as_secs();
     format!("{:02}:{:02}", seconds / 60, seconds % 60)
@@ -1073,7 +1086,7 @@ fn render_hero(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(block, area);
 
     let [left, right] = if area.width < 80 {
-        Layout::horizontal([Constraint::Min(0), Constraint::Length(24)]).areas(inner)
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(26)]).areas(inner)
     } else {
         Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(inner)
     };
@@ -1257,9 +1270,10 @@ fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
     });
     if !app.backup_filter.is_empty() || app.backup_filtering {
         let count = format!("{}/{}", visible.len(), app.snapshot.backups.len());
+        let filter = format!("/{}", app.backup_filter);
         detail = Some(match detail {
-            Some(detail) => format!("{count} · {detail}"),
-            None => count,
+            Some(detail) => format!("{count} {filter} · {detail}"),
+            None => format!("{count} {filter}"),
         });
     }
     let block = pane_block(
@@ -1555,7 +1569,13 @@ fn render_history(frame: &mut Frame, area: Rect, app: &App) {
     if app.history.is_empty() {
         lines.push(Line::from(Span::styled("No operations yet.", fg(MUTED))));
     }
-    for (index, entry) in app.history.iter().enumerate() {
+    let rows = popup.height.saturating_sub(5) as usize;
+    let start = app.history_selected.saturating_sub(rows.saturating_sub(1));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    for (index, entry) in app.history.iter().enumerate().skip(start).take(rows) {
         let selected = index == app.history_selected;
         let style = if selected {
             fg(ACCENT).bold()
@@ -1572,6 +1592,7 @@ fn render_history(frame: &mut Frame, area: Rect, app: &App) {
                 fg(MUTED),
             ),
             Span::styled(fmt_millis(entry.duration_ms), fg(MUTED)),
+            Span::styled(format!("  {} ago", history_age(now, entry.at)), fg(MUTED)),
         ]));
     }
     lines.push(Line::from(""));
@@ -1601,6 +1622,9 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         ("d", "delete selected backup"),
         ("Tab", "switch pane"),
         ("R", "refresh backups and status"),
+        ("L", "list backups, including remote"),
+        ("/", "filter backups"),
+        ("h", "operation history"),
         ("g / G", "top / bottom of output"),
         ("?  / Esc", "close this help"),
         ("↑ / ↓", "scroll this help"),
@@ -1623,8 +1647,18 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         fg(MUTED),
     )));
     lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Operations", fg(ACCENT).bold())));
     lines.push(Line::from(Span::styled(
-        "Interactive commands hand the terminal over to termux-sync.",
+        "  Esc cancel · d diff · 1/2/3 section · / filter",
+        fg(MUTED),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  r retry · type RESTORE then Enter to confirm",
+        fg(MUTED),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Setup and schedule show a handoff card before the terminal changes.",
         fg(MUTED),
     )));
 
@@ -1981,6 +2015,27 @@ mod tests {
     }
 
     #[test]
+    fn history_window_follows_the_selected_entry() {
+        let mut app = app();
+        app.history = (0..20)
+            .map(|n| crate::history::HistoryEntry {
+                kind: "backup".into(),
+                name: format!("entry-{n}"),
+                status: "succeeded".into(),
+                size: n,
+                duration_ms: n,
+                verified: None,
+                at: n,
+            })
+            .collect();
+        app.history_selected = 19;
+        app.show_history = true;
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("entry-19"));
+        assert!(!frame.contains("entry-0"));
+    }
+
+    #[test]
     fn backup_scrollbar_renders_when_list_overflows() {
         let mut app = app();
         let base = app.snapshot.backups[0].clone();
@@ -2019,7 +2074,7 @@ mod tests {
         app.backup_filter = "upgrade".into();
         app.backup_state.select(Some(0));
         let frame = render_app(&mut app, 100, 30);
-        assert!(frame.contains("1/1 ·"));
+        assert!(frame.contains("1/1 /upgrade"));
         assert!(frame.contains("20260101_120000"));
         assert!(frame.contains("before-upgrade"));
     }
@@ -2144,7 +2199,7 @@ mod tests {
         for _ in 0..5 {
             app.on_tick();
         }
-        for _ in 0..10 {
+        for _ in 0..20 {
             app.handle_key(KeyCode::Down);
         }
         terminal

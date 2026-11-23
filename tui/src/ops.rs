@@ -219,9 +219,9 @@ pub fn parse_event(line: &str) -> Result<Event, String> {
             name: text("name"),
             storage: text("storage"),
         },
-        "backup" => Event::Backup(Backup {
+        "backup" if data::is_safe_backup_name(&text("name")) => Event::Backup(Backup {
             name: text("name"),
-            date: text("date"),
+            date: text("date").replace('T', " ").chars().take(16).collect(),
             label: text("label"),
             packages: number("packages").unwrap_or(0) as usize,
             size: number("size").unwrap_or(0),
@@ -229,6 +229,7 @@ pub fn parse_event(line: &str) -> Result<Event, String> {
             compression: text("compression").to_uppercase(),
             modified: None,
         }),
+        "backup" => Event::Unknown,
         "stage" => Event::Stage {
             id: text("id"),
             label: text("label"),
@@ -646,6 +647,7 @@ impl Operation {
                 .is_some_and(|sent| sent.elapsed() > CANCEL_TIMEOUT)
         {
             self.kill_forcefully();
+            self.cancel_sent_at = None;
             self.notice = "process did not stop; killed. Cleanup may be incomplete.".into();
         }
 
@@ -756,13 +758,23 @@ impl Operation {
                 } else {
                     outcome.name.clone()
                 };
-                self.status = if outcome.warnings {
+                self.status = if !outcome.ok {
+                    Status::Failed
+                } else if outcome.warnings {
                     Status::Warnings
                 } else {
                     Status::Succeeded
                 };
+                if !outcome.ok {
+                    self.error = Some(OpError {
+                        message: "termux-sync reported failure".to_string(),
+                        hint: outcome.verify_details.clone(),
+                        exit_code: None,
+                    });
+                }
                 self.result = Some(outcome);
                 self.protected = false;
+                self.cancel_prompt = false;
             }
             Event::Error(error) => {
                 self.status = Status::Failed;

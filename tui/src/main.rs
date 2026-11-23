@@ -184,9 +184,12 @@ Keys:
   d          delete selected backup
   Tab        switch pane
   R          refresh backups and status
+  L          list backups, including remote
+  /          filter backups
+  h          operation history
   ?          help
   q          quit
-  Ctrl+C     quit immediately
+  Ctrl+C     quit dashboard; cancel a running backup; refused during protected restore
 
 Options:
   --no-anim  disable motion (also TERMUX_SYNC_TUI_REDUCED_MOTION=1)

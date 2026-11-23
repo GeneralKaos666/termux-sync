@@ -97,7 +97,7 @@ Use ASCII icons with `--ascii` or `TERMUX_SYNC_TUI_ASCII=1`.
 | any printable | type a backup label when prompted |
 | `?` | help |
 | `↑` / `↓` in help | scroll help at small sizes |
-| `Ctrl+C` | quit immediately; refused during a protected restore |
+| `Ctrl+C` | quit dashboard; cancel a running backup; refused during protected restore |
 | `q` | quit |
 
 Operation keys:
@@ -113,9 +113,10 @@ Operation keys:
 | type `RESTORE`, then `Enter` | confirm a restore |
 
 Mouse: click an action to run it, click a backup row to select it, click a
-pane to focus it, and scroll the wheel over lists and logs. Delete, clear-cache
-and operation-cancel dialogs have clickable confirm/cancel areas. Mouse capture
-disables terminal text selection; hold Shift to select text in most terminals.
+pane to focus it, and scroll the wheel over lists and logs. Backup-label,
+delete, clear-cache and handoff dialogs have clickable confirm/cancel areas.
+Operation cancel is keyboard-only. Mouse capture disables terminal text
+selection; hold Shift to select text in most terminals.
 
 ## Layout
 
@@ -142,9 +143,6 @@ states, and old CLI installs: [RUNBOOK.md](RUNBOOK.md).
 
 ## Spike limits
 
-- Remote storage (Google Drive, GitHub) shows no backup list; use the List
-  action, which captures `termux-sync list` output.
-- Backup labels cannot be typed in the TUI yet.
 - Restore cannot be cancelled after extraction starts.
 - Setup and schedule still hand over the terminal after a confirmation card.
 - Delete and clear-cache run captured after an in-TUI confirmation using

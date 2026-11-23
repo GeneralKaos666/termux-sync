@@ -100,6 +100,30 @@ def _clean_backup_name(name) -> str:
     return cleaned
 
 
+def _valid_backup_name(name) -> bool:
+    raw = str(name)
+    return bool(raw) and _clean_backup_name(raw) == raw
+
+
+def _manifest_shape(manifest, require_files: bool = False) -> bool:
+    if not isinstance(manifest, dict):
+        return False
+    if not _valid_backup_name(manifest.get("name", "")):
+        return False
+    files = manifest.get("files", {})
+    if not isinstance(files, dict):
+        return False
+    if require_files and not files:
+        return False
+    for info in files.values():
+        if not isinstance(info, dict):
+            return False
+        if not isinstance(info.get("archive"), str) or not isinstance(info.get("checksum"), str):
+            return False
+    packages = manifest.get("packages", [])
+    return isinstance(packages, list)
+
+
 def _clean_label(label: str) -> str:
     return re.sub(r"[^\w.-]+", "_", str(label).strip()).strip("_")
 
@@ -285,6 +309,52 @@ def _rclone_progress(args: list[str], stage: str):
         raise RuntimeError(f"rclone exited with {code}")
 
 
+def _http_upload_file(url: str, path: Path, headers: dict, stage: str):
+    import http.client
+    import io
+    import urllib.error
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    connection = (
+        http.client.HTTPSConnection(parsed.hostname, timeout=120)
+        if parsed.scheme == "https"
+        else http.client.HTTPConnection(parsed.hostname, timeout=120)
+    )
+    target = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+    size = path.stat().st_size
+    try:
+        connection.putrequest("POST", target)
+        for key, value in headers.items():
+            if key.lower() != "content-length":
+                connection.putheader(key, value)
+        connection.putheader("Content-Length", str(size))
+        connection.endheaders()
+
+        sent = 0
+        throttle = EventProgress(stage)
+        with open(path, "rb") as source:
+            while chunk := source.read(1 << 18):
+                connection.send(chunk)
+                sent += len(chunk)
+                throttle.emit(sent, size, "bytes", path.name)
+        throttle.emit(sent, size, "bytes", path.name, force=True)
+
+        response = connection.getresponse()
+        body = response.read()
+        status = response.status
+        reason = response.reason
+        response_headers = response.headers
+    finally:
+        connection.close()
+
+    if status >= 400:
+        raise urllib.error.HTTPError(
+            url, status, reason, response_headers, io.BytesIO(body)
+        )
+    return json.loads(body) if body else {}
+
+
 def event_confirmation() -> bool:
     """Read one JSON confirmation line from stdin for restore."""
     line = sys.stdin.readline()
@@ -294,7 +364,7 @@ def event_confirmation() -> bool:
         message = json.loads(line)
     except (json.JSONDecodeError, ValueError):
         return False
-    return isinstance(message, dict) and message.get("confirm") == "RESTORE"
+    return isinstance(message, dict) and str(message.get("confirm", "")).strip() == "RESTORE"
 
 
 
@@ -564,6 +634,8 @@ def sha256(path: Path, chunk=1 << 20) -> str:
 
 
 def _copy_with_sha(src: Path, dst: Path, chunk=1 << 20) -> str:
+    if src.resolve() == dst.resolve() or (dst.exists() and os.path.samefile(src, dst)):
+        raise shutil.SameFileError(f"source and destination are the same file: {src}")
     h = hashlib.sha256()
     with open(src, "rb") as source, open(dst, "wb") as target:
         while data := source.read(chunk):
@@ -575,7 +647,7 @@ def _copy_with_sha(src: Path, dst: Path, chunk=1 << 20) -> str:
 
 def _verify_local_backup(root: Path, files: dict,
                          precomputed: dict | None = None) -> tuple[bool, str]:
-    computed = precomputed or {}
+    _ = precomputed
     for key, info in files.items():
         archive = info.get("archive", "")
         path = root / archive
@@ -585,9 +657,7 @@ def _verify_local_backup(root: Path, files: dict,
         expected_size = info.get("size")
         if expected_size is not None and path.stat().st_size != int(expected_size):
             return False, f"size mismatch for {archive or key}"
-        actual = computed.get(archive)
-        if actual is None:
-            actual = sha256(path)
+        actual = sha256(path)
         if not expected or actual != expected:
             return False, f"checksum failed for {archive or key}"
     return True, "local checksums match"
@@ -865,6 +935,10 @@ class LocalStorage:
     def upload(self, backup_dir: Path, backup_name: str, progress: Progress) -> str:
         dest = self.root / backup_name
         task = progress.add_task("[cyan]Saving to local storage…", total=None)
+        if dest.resolve() == backup_dir.resolve():
+            raise RuntimeError(
+                "local_path points at the temporary backup directory; refusing to copy onto itself"
+            )
         dest.mkdir(parents=True, exist_ok=True)
         files = [f for f in backup_dir.iterdir() if f.is_file()]
         total = sum(f.stat().st_size for f in files)
@@ -895,8 +969,11 @@ class LocalStorage:
             return []
         for d in dirs:
             if d.is_dir():
-                manifest = read_manifest(d)
-                if manifest:
+                try:
+                    manifest = read_manifest(d)
+                except Exception:
+                    continue
+                if _manifest_shape(manifest):
                     backups.append(manifest)
         return backups
 
@@ -1262,20 +1339,22 @@ class GitHubStorage:
         last_err = None
         for attempt in range(self.MAX_RETRIES):
             try:
-                with open(local_path, "rb") as fobj:
-                    data = fobj.read()
                 headers = dict(self._headers())
-                headers["Content-Type"]   = "application/octet-stream"
-                headers["Content-Length"] = str(len(data))
-                req = urllib.request.Request(
-                    upload_url, data=data, headers=headers, method="POST"
-                )
-                with urllib.request.urlopen(req, timeout=120) as resp:
-                    result = json.loads(resp.read())
+                headers["Content-Type"] = "application/octet-stream"
+                if EVENTS is None:
+                    with open(local_path, "rb") as fobj:
+                        data = fobj.read()
+                    headers["Content-Length"] = str(len(data))
+                    req = urllib.request.Request(
+                        upload_url, data=data, headers=headers, method="POST"
+                    )
+                    with urllib.request.urlopen(req, timeout=120) as resp:
+                        result = json.loads(resp.read())
+                else:
+                    result = _http_upload_file(
+                        upload_url, local_path, headers, "upload"
+                    )
                 progress.update(progress_task, completed=file_size)
-                emit_event("progress", stage="upload", current=file_size,
-                           total=file_size, unit="bytes",
-                           detail=local_path.name)
                 return result
             except urllib.error.HTTPError as e:
                 # (HTTPError is a URLError subclass, so it must be handled first)
@@ -1919,7 +1998,7 @@ def _cmd_restore_events(cfg: dict, backup_name: str):
     total_stages = 7
 
     name = _clean_backup_name(backup_name)
-    if not name:
+    if not name or name != str(backup_name).strip():
         emit_event("error", message="Invalid backup name", hint="Pass --name <backup>",
                    exit_code=2)
         return
@@ -1962,6 +2041,13 @@ def _cmd_restore_events(cfg: dict, backup_name: str):
         _restore_cleanup(tmp_dir)
         event_stage("metadata", "Metadata", 1, total_stages, "failed")
         emit_event("error", message="Could not read manifest",
+                   hint="The backup may be corrupted or incomplete.", exit_code=1)
+        return
+
+    if not _manifest_shape(manifest, require_files=True):
+        _restore_cleanup(tmp_dir)
+        event_stage("metadata", "Metadata", 1, total_stages, "failed")
+        emit_event("error", message="Backup manifest is malformed",
                    hint="The backup may be corrupted or incomplete.", exit_code=1)
         return
 
@@ -2162,7 +2248,7 @@ def cmd_restore(cfg: dict, backup_name: str = ""):
             backup_name = choice
 
     safe_backup_name = _clean_backup_name(backup_name)
-    if not safe_backup_name:
+    if not safe_backup_name or safe_backup_name != str(backup_name).strip():
         console.print(f"  [red]✗ Invalid backup name: {escape(repr(backup_name))}[/red]")
         return
     backup_name = safe_backup_name
@@ -2192,6 +2278,10 @@ def cmd_restore(cfg: dict, backup_name: str = ""):
     manifest = read_manifest(tmp_dir)
     if not manifest:
         console.print("  [red]✗ Could not read manifest. Backup may be corrupted.[/red]")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return
+    if not _manifest_shape(manifest, require_files=True):
+        console.print("  [red]✗ Manifest is malformed. Backup may be corrupted.[/red]")
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
 
@@ -2303,6 +2393,13 @@ def cmd_list(cfg: dict):
 
     storage = get_storage(cfg)
     backups = storage.list_backups()
+    safe_backups = []
+    for backup in backups:
+        if _manifest_shape(backup):
+            safe_backups.append(backup)
+        else:
+            log("WARNING", f"Skipped backup with unsafe name: {backup!r}")
+    backups = safe_backups
 
     if EVENTS is not None:
         for backup in backups:
@@ -2377,7 +2474,7 @@ def cmd_delete(cfg: dict, backup_name: str = "", assume_yes: bool = False):
             backup_name = choice
 
     cleaned_name = _clean_backup_name(backup_name)
-    if not cleaned_name:
+    if not cleaned_name or cleaned_name != str(backup_name).strip():
         console.print(f"\n  [red]✗ Invalid backup name: {escape(repr(backup_name))}[/red]\n")
         return
     backup_name = cleaned_name

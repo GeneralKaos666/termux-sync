@@ -455,8 +455,8 @@ Install it beside the Python command with `cd tui && ./install.sh`.
 Use `--ascii` or `TERMUX_SYNC_TUI_ASCII=1` for terminals whose font renders
 the default icons badly.
 
-If the installed `termux-sync` is too old, the TUI refuses with a clear
-message instead of handing over or hanging. See [tui/README.md](tui/README.md)
+If the installed `termux-sync` is too old for events, backup and restore
+refuse with a clear message; `L` falls back to captured text output. See [tui/README.md](tui/README.md)
 for keys, cancellation rules, and layout behavior. Recovery steps live in
 [tui/RUNBOOK.md](tui/RUNBOOK.md).
 

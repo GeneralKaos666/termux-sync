@@ -395,6 +395,9 @@ impl App {
     }
 
     pub fn spinner(&self) -> Option<&'static str> {
+        if self.reduce_motion {
+            return None;
+        }
         if !self.worker.is_busy()
             && self.pending.is_none()
             && !self
@@ -440,6 +443,25 @@ impl App {
     }
 
     fn handle_key_with(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        if modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Char('c') | KeyCode::Char('C'))
+        {
+            if let Some(operation) = &mut self.operation {
+                if operation.is_done() {
+                    self.should_quit = true;
+                } else if !operation.request_cancel() {
+                    operation.notice = "Restore in progress — cannot cancel safely".to_string();
+                }
+                return;
+            }
+            self.pending = None;
+            self.pending_confirm = None;
+            self.pending_label = None;
+            self.pending_handoff = None;
+            self.show_history = false;
+            self.should_quit = true;
+            return;
+        }
         if let Some(action) = self.pending_confirm {
             match code {
                 KeyCode::Enter | KeyCode::Char('y') => {
@@ -477,6 +499,10 @@ impl App {
             self.handle_label_key(code, modifiers);
             return;
         }
+        if self.backup_filtering {
+            self.handle_backups_key(code);
+            return;
+        }
         if self.show_history {
             match code {
                 KeyCode::Esc | KeyCode::Char('h') | KeyCode::Char('q') => {
@@ -505,14 +531,6 @@ impl App {
         }
         if self.operation.is_some() {
             self.handle_operation_key(code, modifiers);
-            return;
-        }
-
-        if modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(code, KeyCode::Char('c') | KeyCode::Char('C'))
-        {
-            self.pending = None;
-            self.should_quit = true;
             return;
         }
 
@@ -852,6 +870,14 @@ impl App {
     }
 
     fn back_to_dashboard(&mut self) {
+        if let Some(operation) = &self.operation {
+            self.status = match operation.status {
+                Status::Failed => "operation failed".to_string(),
+                Status::Cancelled => "operation cancelled".to_string(),
+                Status::Warnings => "completed with errors".to_string(),
+                _ => "operation complete".to_string(),
+            };
+        }
         self.operation = None;
         self.screen = Screen::Dashboard;
         self.op_result_handled = false;
@@ -918,7 +944,11 @@ impl App {
     }
 
     pub fn handle_scroll(&mut self, column: u16, row: u16, up: bool) {
-        if self.pending_confirm.is_some() {
+        if self.pending_confirm.is_some()
+            || self.pending_label.is_some()
+            || self.pending_handoff.is_some()
+            || self.show_history
+        {
             return;
         }
         if let Some(operation) = &mut self.operation {
@@ -1111,7 +1141,6 @@ impl App {
 
     fn select_first_filtered_backup(&mut self) {
         let has_any = !self.filtered_backup_indices().is_empty();
-        self.backup_state.select(has_any.then_some(0));
         self.backup_state = {
             let mut state = TableState::default();
             state.select(has_any.then_some(0));
@@ -1182,7 +1211,15 @@ impl App {
                     self.status = "no backup selected".to_string();
                 }
             }
-            Action::List => self.start_task(Task::ListBackups),
+            Action::List => {
+                if crate::ops::supports_events() {
+                    self.start_task(Task::ListBackups);
+                } else {
+                    self.start_task(Task::Command(vec!["list".to_string()]));
+                    self.status =
+                        "termux-sync is too old for structured list; using text output".to_string();
+                }
+            }
             Action::Logs => {
                 self.output = data::tail_log(200);
                 self.output_offset = 0;
@@ -1285,7 +1322,11 @@ impl App {
     }
 
     pub fn refresh(&mut self) {
-        self.start_task(Task::Refresh);
+        if self.snapshot.config.storage != "local" && crate::ops::supports_events() {
+            self.start_task(Task::ListBackups);
+        } else {
+            self.start_task(Task::Refresh);
+        }
     }
 
     pub fn poll_worker(&mut self) -> bool {
@@ -1309,6 +1350,9 @@ impl App {
                 self.output_offset = 0;
                 self.switch_focus(Focus::Output);
                 self.status = format!("termux-sync {title} finished");
+                if title.starts_with("delete") || title.starts_with("clear-cache") {
+                    self.refresh();
+                }
             }
             Err(err) => {
                 self.output.clear();
@@ -1586,6 +1630,19 @@ mod tests {
     }
 
     #[test]
+    fn filter_keeps_global_shortcuts_out() {
+        let mut app = App::with_snapshot(snapshot());
+        app.focus = Focus::Backups;
+        app.handle_key(KeyCode::Char('/'));
+        for ch in "hRqL".chars() {
+            app.handle_key(KeyCode::Char(ch));
+        }
+        assert_eq!(app.backup_filter, "hRqL");
+        assert!(!app.show_history);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
     fn backup_selection_maps_through_filter() {
         let mut app = App::with_snapshot(snapshot());
         app.backup_filter = "upgrade".into();
@@ -1594,6 +1651,51 @@ mod tests {
             app.selected_backup().map(|backup| backup.name.as_str()),
             Some("backup-two")
         );
+    }
+
+    #[test]
+    fn ctrl_c_cancels_backup_without_quitting() {
+        let mut app = App::with_snapshot(snapshot());
+        app.operation = Some(test_operation(Kind::Backup));
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(app.operation.as_ref().unwrap().status, Status::Cancelling);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_c_refuses_protected_restore() {
+        let mut app = App::with_snapshot(snapshot());
+        let mut operation = test_operation(Kind::Restore);
+        operation.protected = true;
+        app.operation = Some(operation);
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(!app.should_quit);
+        assert!(
+            app.operation
+                .as_ref()
+                .unwrap()
+                .notice
+                .contains("cannot cancel")
+        );
+    }
+
+    #[test]
+    fn reduced_motion_disables_every_spinner() {
+        let mut app = App::with_snapshot(snapshot());
+        app.operation = Some(test_operation(Kind::Backup));
+        assert!(app.spinner().is_some());
+        app.reduce_motion = true;
+        assert!(app.spinner().is_none());
+    }
+
+    #[test]
+    fn dashboard_status_reflects_failed_operation() {
+        let mut app = App::with_snapshot(snapshot());
+        let mut operation = test_operation(Kind::Backup);
+        operation.status = Status::Failed;
+        app.operation = Some(operation);
+        app.back_to_dashboard();
+        assert_eq!(app.status, "operation failed");
     }
 
     #[test]
