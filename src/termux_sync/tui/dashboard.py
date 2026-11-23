@@ -1,6 +1,7 @@
 """Read-only view of the on-disk config and backup manifests for the cockpit."""
 
 import json
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -125,3 +126,8 @@ def human_size(size: int) -> str:
             return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
         value /= 1024
     return f"{int(size)} B"
+
+
+def run_cli(cli_prefix: list[str], argv: list[str]) -> None:
+    """Hand the terminal to the existing CLI while the app is suspended."""
+    subprocess.run(cli_prefix + list(argv))

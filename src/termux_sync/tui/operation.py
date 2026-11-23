@@ -9,9 +9,9 @@ from textual.widgets import Footer, Header, Static
 
 from .dashboard import human_size
 from .models import OperationState, apply_event, new_operation
-from .modals import ConfirmCancelModal
+from .modals import ConfirmCancelModal, FailureCard, ResultCard
 from .runner import OperationRunner
-from .widgets import GaugeRow, LogView, RenderableStatic, StageStepper
+from .widgets import GaugeRow, LogView, StageStepper
 
 MARKS = {"complete": "✓", "failed": "✗", "running": "▶", "pending": "·"}
 
@@ -41,8 +41,8 @@ class OperationScreen(Screen):
         yield StageStepper(id="stepper")
         yield GaugeRow(id="gauges")
         yield LogView(id="log", max_lines=2000)
-        yield RenderableStatic("", id="failure")
-        yield RenderableStatic("", id="result")
+        yield FailureCard("", id="failure")
+        yield ResultCard("", id="result")
         yield Static("", id="size-warning")
         yield Footer()
 
@@ -158,7 +158,7 @@ class OperationScreen(Screen):
             self.query_one("#stage").update(progress=0)
             detail.update(f"{stage.label}: measuring…")
 
-        failure = self.query_one("#failure", RenderableStatic)
+        failure = self.query_one("#failure", FailureCard)
         if self.state.failure:
             text = self.state.failure.get("message", "Operation failed")
             hint = self.state.failure.get("hint", "")
@@ -167,7 +167,7 @@ class OperationScreen(Screen):
         else:
             failure.display = False
 
-        result = self.query_one("#result", RenderableStatic)
+        result = self.query_one("#result", ResultCard)
         if self.state.result:
             payload = self.state.result
             size = human_size(int(payload.get("size", 0) or 0))

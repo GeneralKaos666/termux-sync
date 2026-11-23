@@ -1,3 +1,4 @@
+import contextlib
 import json
 from pathlib import Path
 
@@ -6,6 +7,7 @@ from textual.widgets import DataTable
 
 from termux_sync.tui.app import TermuxSyncApp
 from termux_sync.tui.dashboard import load_snapshot
+from termux_sync.tui.modals import ConfirmCancelModal
 from termux_sync.tui.operation import OperationScreen
 from termux_sync.tui.restore_plan import RestorePlanScreen
 from termux_sync.tui.widgets import StageStepper
@@ -191,3 +193,34 @@ async def test_restore_plan_decline_cancels(tmp_path, monkeypatch, fake_runner):
         screen.action_decline()
         await pilot.pause()
         assert screen.declined is True
+
+
+async def test_cancel_modal_confirms_with_enter(tmp_path, monkeypatch, fake_runner):
+    app = make_app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        screen = OperationScreen(cli_prefix=["python"], command="backup")
+        app.push_screen(screen)
+        screen.action_cancel()
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmCancelModal)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen.state.status == "cancelling"
+        assert fake_runner.cancelled == 1
+
+
+async def test_reduced_motion_disables_animation(monkeypatch):
+    monkeypatch.setenv("TERMUX_SYNC_TUI_REDUCED_MOTION", "1")
+    from termux_sync.tui.modals import reduced_motion
+    assert reduced_motion() is True
+
+
+async def test_dashboard_delete_suspends_for_cli(tmp_path, monkeypatch):
+    app = make_app(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr("termux_sync.tui.dashboard.run_cli", lambda prefix, argv: calls.append(argv))
+    monkeypatch.setattr(type(app), "suspend", lambda self: contextlib.nullcontext())
+    async with app.run_test() as pilot:
+        await pilot.press("d")
+        await pilot.pause()
+    assert calls and calls[0][0] == "delete"

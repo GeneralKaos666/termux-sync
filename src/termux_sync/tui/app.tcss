@@ -98,3 +98,11 @@ ConfirmCancelModal {
     padding: 0 1;
     color: $text-muted;
 }
+
+#help {
+    height: auto;
+}
+
+.reduced-motion * {
+    transition: none;
+}

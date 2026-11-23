@@ -5,6 +5,7 @@ from textual.css.query import NoMatches
 from textual.widgets import DataTable, Footer, Header, Static
 
 from .dashboard import Snapshot, format_date, human_size, load_snapshot, status_text
+from .modals import HelpScreen, reduced_motion
 
 
 class TermuxSyncApp(App):
@@ -36,6 +37,8 @@ class TermuxSyncApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        if reduced_motion():
+            self.add_class("reduced-motion")
         self.refresh_dashboard()
 
     def on_resize(self) -> None:
@@ -97,10 +100,18 @@ class TermuxSyncApp(App):
         )
 
     def action_delete(self) -> None:
-        self.notify("Delete is not wired yet.")
+        from .dashboard import run_cli
+
+        with self.suspend():
+            run_cli(self.cli_prefix, ["delete"])
+        self.action_reload()
 
     def action_setup(self) -> None:
-        self.notify("Run 'termux-sync setup' in a terminal.")
+        from .dashboard import run_cli
+
+        with self.suspend():
+            run_cli(self.cli_prefix, ["setup"])
+        self.action_reload()
 
     def action_help(self) -> None:
-        self.notify("b backup · r restore · l reload · d delete · s setup · q quit")
+        self.push_screen(HelpScreen())
