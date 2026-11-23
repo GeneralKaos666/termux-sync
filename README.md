@@ -434,8 +434,9 @@ cockpit. It is not included in the PyPI wheel or sdist, and `pip install
 termux-sync` does not require Rust.
 
 It streams backup and restore through `termux-sync --json-events`, shows live
-stages and logs, verifies backups, and gates restore behind a package diff and
-typed confirmation.
+stages and logs, verifies backups, lists remote backups, and gates restore
+behind a package diff and typed confirmation. It also keeps a local operation
+history, filters backups, prompts for labels and supports ASCII icons.
 
 Requirements:
 
@@ -450,6 +451,7 @@ cargo build --release
 ./target/release/termux-sync-tui
 ```
 
+Install it beside the Python command with `cd tui && ./install.sh`.
 Use `--ascii` or `TERMUX_SYNC_TUI_ASCII=1` for terminals whose font renders
 the default icons badly.
 

@@ -5,8 +5,9 @@ spike on branch `spike/rust-tui`, not part of the released Python package.
 
 It never reimplements backup logic. Read-only views come from
 `~/.config/termux-sync/config.json`, local `manifest.json` files, and
-`sync.log`. Backup and restore run through the Python event protocol; setup,
-schedule, delete and clear-cache still hand the terminal to `termux-sync`.
+`sync.log`. Backup, restore, list, delete and clear-cache run through captured output or
+the Python event protocol; setup and schedule hand the terminal to
+`termux-sync`.
 
 ## What it shows
 
@@ -18,7 +19,11 @@ schedule, delete and clear-cache still hand the terminal to `termux-sync`.
   logs, disk check, setup, schedule, clear cache, refresh, help, quit.
 - Backups pane: short backup name, age, size, relative usage bar and package
   count, with the selected backup's label, version and compression in the
-  pane title.
+  pane title. `/` filters by name, label or date.
+- Remote list: `L` runs `termux-sync list --json-events` and replaces the
+  table for local, GitHub and Drive backups.
+- Backup label prompt: `Enter` on Backup now opens an optional label input.
+- History: `h` shows the last 20 operations; `r` retries the selected entry.
 - Output pane: scrollable log tail and captured command output, with dimmed
   dates and INFO / WARNING / ERROR chips.
 - Operations cockpit: backup streams stages, progress and logs inside the TUI.
@@ -85,8 +90,11 @@ Use ASCII icons with `--ascii` or `TERMUX_SYNC_TUI_ASCII=1`.
 | `d` | delete selected backup from Backups pane |
 | `Tab` / `Shift-Tab` | switch pane |
 | `R` | refresh backups and status |
-| `L` | list backups (inline, including remote output) |
+| `L` | list backups, including remote storage |
+| `/` | filter backups in the Backups pane |
+| `h` | operation history |
 | `g` / `G` | top / bottom of output |
+| any printable | type a backup label when prompted |
 | `?` | help |
 | `↑` / `↓` in help | scroll help at small sizes |
 | `Ctrl+C` | quit immediately; refused during a protected restore |
@@ -100,7 +108,7 @@ Operation keys:
 | `d` | open package diff on the restore plan |
 | `1` / `2` / `3` | jump diff sections |
 | `/` | filter the current diff section |
-| `r` | retry a failed operation |
+| `r` | retry a failed operation or history entry |
 | `↑` / `↓`, `PgUp` / `PgDn`, `G` | scroll logs or diff |
 | type `RESTORE`, then `Enter` | confirm a restore |
 
@@ -122,8 +130,10 @@ disables terminal text selection; hold Shift to select text in most terminals.
 - The config parser keeps only display fields. Tokens and passwords in
   `config.json` are never read into the TUI state.
 - Status, backup list and logs are read-only.
-- Backup, restore, delete, setup, schedule and clear-cache run the real
-  `termux-sync` command with the terminal restored, then return to the TUI.
+- Backup, restore, delete and clear-cache run the real `termux-sync` command.
+  Delete and clear-cache confirm inside the TUI, then run captured with
+  `--yes`; restore uses the event protocol. Setup and schedule use the
+  explicit handoff card.
 
 ## Runbook
 
@@ -136,7 +146,7 @@ states, and old CLI installs: [RUNBOOK.md](RUNBOOK.md).
   action, which captures `termux-sync list` output.
 - Backup labels cannot be typed in the TUI yet.
 - Restore cannot be cancelled after extraction starts.
-- Setup and schedule still hand over the terminal.
+- Setup and schedule still hand over the terminal after a confirmation card.
 - Delete and clear-cache run captured after an in-TUI confirmation using
-  `termux-sync --yes`.
+  `termux-sync --yes`; older CLI falls back to the terminal prompt.
 - The operations protocol is version 1 and backup/restore only.
