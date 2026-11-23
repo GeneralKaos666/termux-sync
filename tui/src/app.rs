@@ -218,6 +218,8 @@ pub struct App {
     pub snapshot: Snapshot,
     pub action_state: ListState,
     pub backup_state: TableState,
+    pub backup_filter: String,
+    pub backup_filtering: bool,
     pub focus: Focus,
     pub output: Vec<String>,
     pub output_offset: usize,
@@ -276,6 +278,8 @@ impl App {
             snapshot,
             action_state,
             backup_state,
+            backup_filter: String::new(),
+            backup_filtering: false,
             focus: Focus::Actions,
             output,
             output_offset: 0,
@@ -372,10 +376,26 @@ impl App {
         Some(FRAMES[(self.tick as usize / 2) % FRAMES.len()])
     }
 
+    pub fn filtered_backup_indices(&self) -> Vec<usize> {
+        let filter = self.backup_filter.to_lowercase();
+        self.snapshot
+            .backups
+            .iter()
+            .enumerate()
+            .filter(|(_, backup)| {
+                filter.is_empty()
+                    || backup.name.to_lowercase().contains(&filter)
+                    || backup.label.to_lowercase().contains(&filter)
+                    || backup.date.to_lowercase().contains(&filter)
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
     pub fn selected_backup(&self) -> Option<&Backup> {
-        self.backup_state
-            .selected()
-            .and_then(|index| self.snapshot.backups.get(index))
+        let position = self.backup_state.selected()?;
+        let index = *self.filtered_backup_indices().get(position)?;
+        self.snapshot.backups.get(index)
     }
 
     #[cfg(test)]
@@ -886,7 +906,7 @@ impl App {
             let first_data = self.backups_area.y.saturating_add(2);
             if row >= first_data {
                 let index = (row - first_data) as usize + self.backup_state.offset();
-                if index < self.snapshot.backups.len() {
+                if index < self.filtered_backup_indices().len() {
                     self.backup_state.select(Some(index));
                 }
             }
@@ -908,13 +928,48 @@ impl App {
     }
 
     fn handle_backups_key(&mut self, code: KeyCode) {
+        if self.backup_filtering {
+            match code {
+                KeyCode::Esc => {
+                    self.backup_filtering = false;
+                    self.backup_filter.clear();
+                    self.select_first_filtered_backup();
+                }
+                KeyCode::Enter => self.backup_filtering = false,
+                KeyCode::Backspace => {
+                    self.backup_filter.pop();
+                    self.select_first_filtered_backup();
+                }
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    self.backup_filter.push(ch);
+                    self.select_first_filtered_backup();
+                }
+                _ => {}
+            }
+            return;
+        }
         match code {
             KeyCode::Up | KeyCode::Char('k') => self.move_backup(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_backup(1),
             KeyCode::Enter => self.run(Action::Restore),
             KeyCode::Char('d') => self.run(Action::Delete),
+            KeyCode::Char('/') => {
+                self.backup_filtering = true;
+                self.backup_filter.clear();
+                self.select_first_filtered_backup();
+            }
             _ => {}
         }
+    }
+
+    fn select_first_filtered_backup(&mut self) {
+        let has_any = !self.filtered_backup_indices().is_empty();
+        self.backup_state.select(has_any.then_some(0));
+        self.backup_state = {
+            let mut state = TableState::default();
+            state.select(has_any.then_some(0));
+            state
+        };
     }
 
     fn handle_output_key(&mut self, code: KeyCode) {
@@ -942,7 +997,7 @@ impl App {
     }
 
     fn move_backup(&mut self, delta: isize) {
-        let len = self.snapshot.backups.len();
+        let len = self.filtered_backup_indices().len();
         if len == 0 {
             return;
         }
@@ -1111,6 +1166,8 @@ impl App {
         let count = backups.len();
         self.snapshot.backups = backups;
         self.snapshot.warning = None;
+        self.backup_filter.clear();
+        self.backup_filtering = false;
         self.backup_state.select((count > 0).then_some(0));
         self.switch_focus(Focus::Backups);
         self.status = format!("{count} backup(s)");
@@ -1135,7 +1192,7 @@ impl App {
         if self.snapshot.backups.is_empty() {
             self.backup_state.select(None);
         } else {
-            let index = selected_name
+            let full_index = selected_name
                 .and_then(|name| {
                     self.snapshot
                         .backups
@@ -1143,7 +1200,15 @@ impl App {
                         .position(|backup| backup.name == name)
                 })
                 .unwrap_or(0);
-            self.backup_state.select(Some(index));
+            if !self.filtered_backup_indices().contains(&full_index) {
+                self.backup_filter.clear();
+            }
+            let position = self
+                .filtered_backup_indices()
+                .iter()
+                .position(|index| *index == full_index)
+                .unwrap_or(0);
+            self.backup_state.select(Some(position));
         }
     }
 }
@@ -1309,6 +1374,26 @@ mod tests {
 
         app.run(Action::ClearCache);
         assert_eq!(app.pending_confirm, Some(Action::ClearCache));
+    }
+
+    #[test]
+    fn backup_filter_matches_name_and_label() {
+        let mut app = App::with_snapshot(snapshot());
+        app.backup_filter = "upgrade".into();
+        assert_eq!(app.filtered_backup_indices(), vec![1]);
+        app.backup_filter = "backup-one".into();
+        assert_eq!(app.filtered_backup_indices(), vec![0]);
+    }
+
+    #[test]
+    fn backup_selection_maps_through_filter() {
+        let mut app = App::with_snapshot(snapshot());
+        app.backup_filter = "upgrade".into();
+        app.backup_state.select(Some(0));
+        assert_eq!(
+            app.selected_backup().map(|backup| backup.name.as_str()),
+            Some("backup-two")
+        );
     }
 
     #[test]

@@ -1147,7 +1147,8 @@ fn render_actions(frame: &mut Frame, area: Rect, app: &mut App) {
 
 fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
     app.backups_area = area;
-    let detail = app.selected_backup().map(|backup| {
+    let visible = app.filtered_backup_indices();
+    let mut detail = app.selected_backup().map(|backup| {
         let mut parts = Vec::new();
         if !backup.label.is_empty() {
             parts.push(backup.label.clone());
@@ -1155,6 +1156,13 @@ fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
         parts.push(format!("v{} {}", backup.version, backup.compression));
         parts.join(" · ")
     });
+    if !app.backup_filter.is_empty() || app.backup_filtering {
+        let count = format!("{}/{}", visible.len(), app.snapshot.backups.len());
+        detail = Some(match detail {
+            Some(detail) => format!("{count} · {detail}"),
+            None => count,
+        });
+    }
     let block = pane_block(
         "Backups",
         detail.as_deref(),
@@ -1162,7 +1170,7 @@ fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
         SUCCESS,
     );
 
-    if app.snapshot.backups.is_empty() {
+    if app.snapshot.backups.is_empty() || visible.is_empty() {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let [_, middle, _] = Layout::vertical([
@@ -1171,11 +1179,14 @@ fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
             Constraint::Fill(1),
         ])
         .areas(inner);
-        let message = app
-            .snapshot
-            .warning
-            .clone()
-            .unwrap_or_else(|| "No local backups. Press R to refresh.".to_string());
+        let message = if !app.snapshot.backups.is_empty() {
+            format!("No backup matches '{}'", app.backup_filter)
+        } else {
+            app.snapshot
+                .warning
+                .clone()
+                .unwrap_or_else(|| "No local backups. Press R to refresh.".to_string())
+        };
         let (title, message) = if app.loading {
             (
                 format!("{} Loading backups", app.spinner().unwrap_or("◐")),
@@ -1193,29 +1204,31 @@ fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let max_size = app
-        .snapshot
-        .backups
+    let max_size = visible
         .iter()
+        .filter_map(|index| app.snapshot.backups.get(*index))
         .map(|backup| backup.size)
         .max()
         .unwrap_or(1)
         .max(1);
 
-    let rows = app.snapshot.backups.iter().map(|backup| {
-        let label = if backup.label.is_empty() {
-            String::new()
-        } else {
-            format!("  {}", backup.label)
-        };
-        Row::new(vec![
-            Cell::from(format!("{}{}", short_name(&backup.name), label)),
-            Cell::from(backup_age(backup)),
-            Cell::from(human_size(backup.size)),
-            Cell::from(size_bar(backup.size, max_size, 6)).style(fg(SUCCESS)),
-            Cell::from(backup.packages.to_string()),
-        ])
-    });
+    let rows = visible
+        .iter()
+        .filter_map(|index| app.snapshot.backups.get(*index))
+        .map(|backup| {
+            let label = if backup.label.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", backup.label)
+            };
+            Row::new(vec![
+                Cell::from(format!("{}{}", short_name(&backup.name), label)),
+                Cell::from(backup_age(backup)),
+                Cell::from(human_size(backup.size)),
+                Cell::from(size_bar(backup.size, max_size, 6)).style(fg(SUCCESS)),
+                Cell::from(backup.packages.to_string()),
+            ])
+        });
 
     let header = Row::new(["NAME", "AGE", "SIZE", "USED", "PKGS"])
         .style(fg(MUTED).bold())
@@ -1363,6 +1376,7 @@ fn hints(focus: Focus, wide: bool) -> &'static [(&'static str, &'static str)] {
             ("↑↓", "move"),
             ("Enter", "restore"),
             ("d", "delete"),
+            ("/", "filter"),
             ("Tab", "focus"),
             ("R", "refresh"),
             ("q", "quit"),
@@ -1371,6 +1385,7 @@ fn hints(focus: Focus, wide: bool) -> &'static [(&'static str, &'static str)] {
             ("↑↓", ""),
             ("Enter", ""),
             ("d", ""),
+            ("/", ""),
             ("Tab", ""),
             ("R", ""),
             ("q", ""),
@@ -1765,6 +1780,17 @@ mod tests {
         assert!(frame.contains("+  Backup now"));
         assert!(frame.contains("=  List backups"));
         assert!(!frame.contains("≡  List backups"));
+    }
+
+    #[test]
+    fn backup_filter_render_shows_matching_rows_and_count() {
+        let mut app = app();
+        app.backup_filter = "upgrade".into();
+        app.backup_state.select(Some(0));
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("1/1 ·"));
+        assert!(frame.contains("20260101_120000"));
+        assert!(frame.contains("before-upgrade"));
     }
 
     #[test]
