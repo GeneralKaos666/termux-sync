@@ -935,22 +935,40 @@ impl App {
     }
 
     fn execute_confirmed_action(&mut self, action: Action) {
+        self.execute_confirmed_action_with(action, crate::ops::supports_yes());
+    }
+
+    fn execute_confirmed_action_with(&mut self, action: Action, yes_supported: bool) {
         match action {
             Action::Delete => {
                 if let Some(name) = self.selected_backup().map(|backup| backup.name.clone()) {
-                    self.start_task(Task::Command(vec![
-                        "delete".to_string(),
-                        "--name".to_string(),
-                        name,
-                        "--yes".to_string(),
-                    ]));
+                    if yes_supported {
+                        self.start_task(Task::Command(vec![
+                            "delete".to_string(),
+                            "--name".to_string(),
+                            name,
+                            "--yes".to_string(),
+                        ]));
+                    } else {
+                        self.queue_command(vec!["delete", "--name", &name]);
+                        self.status =
+                            "termux-sync is too old for in-TUI delete; using CLI confirmation"
+                                .to_string();
+                    }
                 }
             }
             Action::ClearCache => {
-                self.start_task(Task::Command(vec![
-                    "clear-cache".to_string(),
-                    "--yes".to_string(),
-                ]));
+                if yes_supported {
+                    self.start_task(Task::Command(vec![
+                        "clear-cache".to_string(),
+                        "--yes".to_string(),
+                    ]));
+                } else {
+                    self.queue_command(vec!["clear-cache"]);
+                    self.status =
+                        "termux-sync is too old for in-TUI clear-cache; using CLI confirmation"
+                            .to_string();
+                }
             }
             _ => {}
         }
@@ -1201,6 +1219,18 @@ mod tests {
 
         app.run(Action::ClearCache);
         assert_eq!(app.pending_confirm, Some(Action::ClearCache));
+    }
+
+    #[test]
+    fn confirmed_delete_falls_back_to_handoff_without_yes() {
+        let mut app = App::with_snapshot(snapshot());
+        app.execute_confirmed_action_with(Action::Delete, false);
+        assert!(app.pending.as_ref().is_some_and(|args| args[0] == "delete"));
+        assert!(!app.pending.unwrap().contains(&"--yes".to_string()));
+
+        let mut app = App::with_snapshot(snapshot());
+        app.execute_confirmed_action_with(Action::ClearCache, false);
+        assert_eq!(app.pending, Some(vec!["clear-cache".to_string()]));
     }
 
     #[test]

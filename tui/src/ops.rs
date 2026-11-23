@@ -361,14 +361,22 @@ enum Msg {
     Eof,
 }
 
-pub fn supports_events() -> bool {
-    data::cli_command(&["--json-events".to_string(), "--version".to_string()])
+pub fn supports_flag(flag: &str) -> bool {
+    data::cli_command(&[flag.to_string(), "--version".to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+pub fn supports_events() -> bool {
+    supports_flag("--json-events")
+}
+
+pub fn supports_yes() -> bool {
+    supports_flag("--yes")
 }
 
 pub struct Operation {
