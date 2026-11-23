@@ -261,3 +261,39 @@ def test_github_upload_emits_progress(events, tmp_path, monkeypatch):
     progress_events = [e for e in parsed(events) if e["event"] == "progress"]
     assert progress_events[-1]["stage"] == "upload"
     assert progress_events[-1]["current"] == 32
+
+
+def test_local_upload_records_checksums_and_verifies_without_rehash(tmp_path, monkeypatch):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.tar.gz").write_bytes(b"abc")
+    dest = tmp_path / "dest"
+    storage = ts.LocalStorage({"local_path": str(dest)})
+    with ts.make_progress() as progress:
+        storage.upload(src, "b1", progress)
+    checksum = ts.hashlib.sha256(b"abc").hexdigest()
+    assert storage.stored_checksums["a.tar.gz"] == checksum
+
+    monkeypatch.setattr(
+        ts, "sha256", lambda *a, **k: (_ for _ in ()).throw(AssertionError("rehash"))
+    )
+    ok, details = ts._verify_local_backup(
+        dest / "b1",
+        {"home": {"archive": "a.tar.gz", "checksum": checksum}},
+        storage.stored_checksums,
+    )
+    assert ok and details == "local checksums match"
+
+
+def test_local_verify_flags_corrupt_stored_file(tmp_path):
+    root = tmp_path / "b1"
+    root.mkdir()
+    (root / "a.tar.gz").write_bytes(b"tampered")
+    expected = ts.hashlib.sha256(b"abc").hexdigest()
+    ok, details = ts._verify_local_backup(
+        root,
+        {"home": {"archive": "a.tar.gz", "checksum": expected, "size": 3}},
+        {"a.tar.gz": expected},
+    )
+    assert not ok
+    assert "size mismatch" in details

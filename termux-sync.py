@@ -563,6 +563,36 @@ def sha256(path: Path, chunk=1 << 20) -> str:
     return h.hexdigest()
 
 
+def _copy_with_sha(src: Path, dst: Path, chunk=1 << 20) -> str:
+    h = hashlib.sha256()
+    with open(src, "rb") as source, open(dst, "wb") as target:
+        while data := source.read(chunk):
+            h.update(data)
+            target.write(data)
+    shutil.copystat(src, dst, follow_symlinks=False)
+    return h.hexdigest()
+
+
+def _verify_local_backup(root: Path, files: dict,
+                         precomputed: dict | None = None) -> tuple[bool, str]:
+    computed = precomputed or {}
+    for key, info in files.items():
+        archive = info.get("archive", "")
+        path = root / archive
+        if not path.is_file():
+            return False, f"missing archive: {archive or key}"
+        expected = info.get("checksum")
+        expected_size = info.get("size")
+        if expected_size is not None and path.stat().st_size != int(expected_size):
+            return False, f"size mismatch for {archive or key}"
+        actual = computed.get(archive)
+        if actual is None:
+            actual = sha256(path)
+        if not expected or actual != expected:
+            return False, f"checksum failed for {archive or key}"
+    return True, "local checksums match"
+
+
 def get_installed_packages() -> list[str]:
     try:
         result = subprocess.run(
@@ -830,6 +860,7 @@ def read_manifest(backup_dir: Path) -> Optional[dict]:
 class LocalStorage:
     def __init__(self, cfg: dict):
         self.root = Path(cfg["local_path"]).expanduser()
+        self.stored_checksums: dict[str, str] = {}
 
     def upload(self, backup_dir: Path, backup_name: str, progress: Progress) -> str:
         dest = self.root / backup_name
@@ -838,8 +869,9 @@ class LocalStorage:
         files = [f for f in backup_dir.iterdir() if f.is_file()]
         total = sum(f.stat().st_size for f in files)
         done = 0
+        self.stored_checksums = {}
         for f in files:
-            shutil.copy2(f, dest / f.name)
+            self.stored_checksums[f.name] = _copy_with_sha(f, dest / f.name)
             done += f.stat().st_size
             if EVENTS is not None:
                 emit_event("progress", stage="upload", current=done, total=total,
@@ -1802,20 +1834,16 @@ def cmd_backup(cfg: dict, label: str = ""):
         verified = True
         verify_details = "stream digest"
     elif cfg.get("storage") == "local" and location:
-        verified = True
         root = Path(location)
         files = list(meta.get("files", {}).items())
         for index, (key, info) in enumerate(files, 1):
-            stored = root / info.get("archive", "")
             emit_event("progress", stage="verify", current=index,
                        total=len(files), unit="items",
                        detail=info.get("archive", key))
-            if not stored.is_file() or sha256(stored) != info.get("checksum"):
-                verified = False
-                verify_details = f"checksum failed for {info.get('archive', key)}"
-                break
-        if verified:
-            verify_details = "local checksums match"
+        verified, verify_details = _verify_local_backup(
+            root, meta.get("files", {}),
+            getattr(storage, "stored_checksums", None),
+        )
     emit_event("verify",
                state="verified" if verified else ("skipped" if verified is None else "failed"),
                details=verify_details)
