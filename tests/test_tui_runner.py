@@ -1,0 +1,58 @@
+import sys
+import threading
+from pathlib import Path
+
+from termux_sync.tui.runner import OperationRunner
+
+FAKE = Path(__file__).parent / "fixtures" / "fake_engine.py"
+
+
+def collect(mode, timeout=10):
+    events, exits = [], []
+    done = threading.Event()
+    runner = OperationRunner(
+        [sys.executable, str(FAKE)],
+        on_event=events.append,
+        on_exit=lambda code: (exits.append(code), done.set()),
+    )
+    runner.start("backup", mode)
+    assert done.wait(timeout)
+    runner.close()
+    return events, exits
+
+
+def test_streams_events_and_exit_code():
+    events, exits = collect("ok")
+    assert [e["event"] for e in events] == ["start", "result"]
+    assert exits == [0]
+
+
+def test_malformed_line_becomes_warning():
+    events, _ = collect("garbage")
+    warnings = [e for e in events if e["event"] == "log" and e["level"] == "WARNING"]
+    assert warnings
+    assert [e["event"] for e in events][-1] == "result"
+
+
+def test_oversized_line_is_discarded_with_warning():
+    events, _ = collect("huge")
+    assert any(e.get("level") == "WARNING" for e in events if e["event"] == "log")
+
+
+def test_non_utf8_line_decodes_lossily():
+    events, _ = collect("nonutf8")
+    assert any("message" in e for e in events if e["event"] == "log")
+
+
+def test_exit_without_result_is_reported():
+    events, exits = collect("silent")
+    assert events == []
+    assert exits == [3]
+
+
+def test_cancel_signals_process_group():
+    runner = OperationRunner([sys.executable, str(FAKE)], on_event=lambda e: None, on_exit=lambda c: None)
+    runner.start("backup", "hang")
+    runner.cancel()
+    assert runner.wait(10) == 130
+    runner.close()
