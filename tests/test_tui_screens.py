@@ -7,6 +7,7 @@ from textual.widgets import DataTable
 from termux_sync.tui.app import TermuxSyncApp
 from termux_sync.tui.dashboard import load_snapshot
 from termux_sync.tui.operation import OperationScreen
+from termux_sync.tui.restore_plan import RestorePlanScreen
 from termux_sync.tui.widgets import StageStepper
 
 
@@ -105,6 +106,7 @@ class FakeRunner:
 def fake_runner(monkeypatch):
     runner = FakeRunner()
     monkeypatch.setattr("termux_sync.tui.operation.OperationRunner", lambda *a, **k: runner)
+    monkeypatch.setattr("termux_sync.tui.restore_plan.OperationRunner", lambda *a, **k: runner)
     return runner
 
 
@@ -163,3 +165,29 @@ async def test_child_death_without_events_shows_failure(tmp_path, monkeypatch, f
         await pilot.pause()
         assert screen.state.status == "failed"
         assert screen.state.failure["exit_code"] == 3
+
+
+async def test_restore_plan_requires_exact_token(tmp_path, monkeypatch, fake_runner):
+    app = make_app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        screen = RestorePlanScreen(cli_prefix=["python"], backup_name="b1")
+        app.push_screen(screen)
+        screen.handle_event({"event": "plan", "name": "b1", "size": 1024, "created": "2026-11-22", "storage": "local", "packages": 2, "targets": ["home"]})
+        screen.handle_event({"event": "package_diff", "chunk": 1, "chunks": 1, "install": ["git"], "present": ["python"], "missing": []})
+        await pilot.pause()
+        assert screen.can_confirm() is False
+        screen.submit_confirmation("restore")
+        assert screen.can_confirm() is False
+        screen.submit_confirmation("RESTORE")
+        assert screen.can_confirm() is True
+        assert fake_runner.confirmed == ["RESTORE"]
+
+
+async def test_restore_plan_decline_cancels(tmp_path, monkeypatch, fake_runner):
+    app = make_app(tmp_path, monkeypatch)
+    async with app.run_test() as pilot:
+        screen = RestorePlanScreen(cli_prefix=["python"], backup_name="b1")
+        app.push_screen(screen)
+        screen.action_decline()
+        await pilot.pause()
+        assert screen.declined is True

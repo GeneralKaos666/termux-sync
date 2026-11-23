@@ -79,3 +79,22 @@ ConfirmCancelModal {
     border: round $warning;
     background: $surface;
 }
+
+#summary {
+    height: auto;
+    padding: 0 1;
+}
+
+#diff {
+    height: 1fr;
+}
+
+#confirm {
+    margin: 0 1;
+}
+
+#hint {
+    height: auto;
+    padding: 0 1;
+    color: $text-muted;
+}

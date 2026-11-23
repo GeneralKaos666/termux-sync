@@ -87,7 +87,14 @@ class TermuxSyncApp(App):
         self.push_screen(OperationScreen(self.cli_prefix, "backup"))
 
     def action_restore(self) -> None:
-        self.notify("Restore cockpit is not wired yet.")
+        from .restore_plan import RestorePlanScreen
+
+        if not self.snapshot.backups:
+            self.notify("No backups to restore.")
+            return
+        self.push_screen(
+            RestorePlanScreen(self.cli_prefix, self.snapshot.backups[0]["name"])
+        )
 
     def action_delete(self) -> None:
         self.notify("Delete is not wired yet.")
