@@ -1072,11 +1072,16 @@ fn render_hero(frame: &mut Frame, area: Rect, app: &mut App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(inner);
+    let [left, right] = if area.width < 80 {
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(24)]).areas(inner)
+    } else {
+        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(inner)
+    };
 
     let mut title = gradient_spans("TERMUX SYNC");
-    title.push(Span::styled("   backup dashboard", fg(MUTED)));
+    if area.width >= 80 {
+        title.push(Span::styled("   backup dashboard", fg(MUTED)));
+    }
     if area.width >= 100 {
         title.push(Span::styled(
             format!(
@@ -1951,6 +1956,18 @@ mod tests {
         assert!(frame.contains("+  Backup now"));
         assert!(frame.contains("=  List backups"));
         assert!(!frame.contains("≡  List backups"));
+    }
+
+    #[test]
+    fn header_fits_at_56_columns_with_github_and_warning() {
+        let mut app = app();
+        app.snapshot.config.storage = "github".into();
+        app.snapshot.backups.clear();
+        app.snapshot.warning = Some("GITHUB storage".into());
+        let frame = render_app(&mut app, 56, 24);
+        assert!(frame.contains("GITHUB"));
+        assert!(frame.contains("0 BACKUPS"));
+        assert!(frame.contains("WARN"));
     }
 
     #[test]
