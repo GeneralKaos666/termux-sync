@@ -2725,6 +2725,7 @@ COMMAND_GROUPS = [
         ("restore",       "Restore from a backup"),
         ("list",          "List all available backups"),
         ("delete",        "Delete a specific backup"),
+        ("tui",           "Open the full-screen interface"),
     ]),
     ("Configuration", [
         ("setup",         "Interactive configuration wizard"),
@@ -2856,6 +2857,24 @@ def _abort():
     sys.exit(130)
 
 
+def cmd_tui():
+    """Launch the full-screen Textual interface when it is installed."""
+    try:
+        from termux_sync.tui import run
+    except ImportError:
+        print_error(
+            "TUI not available",
+            "Textual is not installed.",
+            escape("Install it with: pip install 'termux-sync[tui]'"),
+        )
+        return
+    if __package__:
+        prefix = [sys.executable, "-m", "termux_sync"]
+    else:
+        prefix = [sys.executable, os.path.abspath(__file__)]
+    run(prefix)
+
+
 def main(argv=None):
     global DEBUG, EVENTS, console
     args = build_parser().parse_args(argv)
@@ -2885,6 +2904,7 @@ def main(argv=None):
             "restore":       lambda: cmd_restore(cfg, backup_name=args.name),
             "list":          lambda: cmd_list(cfg),
             "delete":        lambda: cmd_delete(cfg, backup_name=args.name),
+            "tui":           lambda: cmd_tui(),
             "schedule":      lambda: cmd_schedule(),
             "daemon":        lambda: cmd_daemon(cfg),
             "status":        lambda: cmd_status(cfg),

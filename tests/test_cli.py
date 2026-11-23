@@ -1,4 +1,5 @@
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -91,3 +92,15 @@ def test_package_and_project_versions_match():
     match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M)
     assert match is not None
     assert match.group(1) == ts.VERSION
+
+
+def test_tui_is_a_known_command():
+    assert "tui" in ts.COMMANDS
+
+
+def test_tui_reports_missing_textual(monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "termux_sync.tui", None)
+    ts.cmd_tui()
+    out = capsys.readouterr().out
+    assert "TUI not available" in out
+    assert "pip install 'termux-sync[tui]'" in out
