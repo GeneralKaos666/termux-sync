@@ -32,3 +32,6 @@ jobs:
 
       - name: Build release binary
         run: cargo build --locked --release
+
+      - name: Install script
+        run: PREFIX="$RUNNER_TEMP/prefix" bash install.sh --skip-build

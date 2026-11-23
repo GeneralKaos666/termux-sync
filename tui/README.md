@@ -49,6 +49,16 @@ cargo build --release
 ./target/release/termux-sync-tui
 ```
 
+Install it beside the Python command with:
+
+```bash
+cd tui
+./install.sh
+```
+
+`install.sh` accepts `--prefix PATH` and `--skip-build`. It copies the release
+binary into `$PREFIX/bin`.
+
 Requires a terminal on stdout. Non-TTY runs exit with status 2 instead of
 drawing garbage.
 
