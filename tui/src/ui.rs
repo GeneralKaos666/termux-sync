@@ -6,7 +6,7 @@ use ratatui::widgets::{
     Block, BorderType, Cell, Clear, Gauge, List, ListItem, Padding, Paragraph, Row, Scrollbar,
     ScrollbarOrientation, ScrollbarState, Table, Wrap,
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{ACTIONS, Action, App, Focus, OutputSource, Screen};
 use crate::data::{backup_age, human_size, parse_log_line};
@@ -205,10 +205,16 @@ fn render_input_prompt(frame: &mut Frame, area: Rect, app: &mut App) {
     let lines = vec![
         Line::from(Span::styled("Input", fg(MUTED))),
         Line::from(vec![
-            Span::styled(app.input_text.clone(), fg(Color::Reset).bold()),
+            Span::styled(
+                tail_fit(&app.input_text, inner.width.saturating_sub(1) as usize),
+                fg(Color::Reset).bold(),
+            ),
             Span::styled("█", fg(ACCENT)),
         ]),
-        Line::from(Span::styled(prompt.hint(), fg(MUTED))),
+        Line::from(Span::styled(
+            clip_text(prompt.hint(), inner.width as usize),
+            fg(MUTED),
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled(" Enter ", fg(SUCCESS).bold()),
@@ -220,11 +226,44 @@ fn render_input_prompt(frame: &mut Frame, area: Rect, app: &mut App) {
     ];
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .block(op_block(prompt.title(), ACCENT))
-            .wrap(Wrap { trim: true }),
+        Paragraph::new(Text::from(lines)).block(op_block(prompt.title(), ACCENT)),
         popup,
     );
+}
+
+fn clip_text(text: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let char_width = ch.width().unwrap_or(0);
+        if used + char_width + 1 > width {
+            break;
+        }
+        out.push(ch);
+        used += char_width;
+    }
+    out.push('…');
+    out
+}
+
+fn tail_fit(text: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 1;
+    for ch in text.chars().rev() {
+        let char_width = ch.width().unwrap_or(0);
+        if used + char_width > width {
+            break;
+        }
+        out.insert(0, ch);
+        used += char_width;
+    }
+    format!("…{out}")
 }
 
 fn render_action_confirm(frame: &mut Frame, area: Rect, app: &mut App, action: Action) {
@@ -1382,7 +1421,7 @@ fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
 fn render_output(frame: &mut Frame, area: Rect, app: &mut App) {
     app.output_area = area;
     let detail = match app.output_source {
-        OutputSource::Log => format!("log {}", app.log_lines),
+        OutputSource::Log => format!("log {}", app.output.len()),
         OutputSource::Command => "command".to_string(),
     };
     let block = pane_block("Output", Some(&detail), app.focus == Focus::Output, MAGENTA);
@@ -1687,19 +1726,24 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
-    let inner_height = popup.height.saturating_sub(2) as usize;
-    let max_scroll = lines.len().saturating_sub(inner_height);
+    let content_width = popup.width.saturating_sub(4);
+    let content_height = popup.height.saturating_sub(2) as usize;
+    let total = Paragraph::new(Text::from(lines.clone()))
+        .wrap(Wrap { trim: false })
+        .line_count(content_width);
+    let max_scroll = total.saturating_sub(content_height);
     let scroll = app.status_scroll.min(max_scroll);
-    let visible: Vec<Line> = lines.into_iter().skip(scroll).take(inner_height).collect();
     let detail = (max_scroll > 0).then_some("↑↓ scroll");
 
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(Text::from(visible))
+        Paragraph::new(Text::from(lines))
             .block(pane_block("Status", detail, true, ACCENT))
-            .wrap(Wrap { trim: false }),
+            .wrap(Wrap { trim: false })
+            .scroll((scroll as u16, 0)),
         popup,
     );
+    scrollbar(frame, popup, total, content_height, scroll);
 }
 
 fn render_daemon(frame: &mut Frame, area: Rect, app: &App) {
@@ -1714,7 +1758,7 @@ fn render_daemon(frame: &mut Frame, area: Rect, app: &App) {
             crate::data::short_path(&crate::data::boot_script_path())
         )
     } else {
-        "missing — install Termux:Boot to create it".to_string()
+        "missing — run termux-sync schedule to create it".to_string()
     };
     let mut lines = vec![
         Line::from(Span::styled("DAEMON", fg(ACCENT).bold())),
@@ -1759,19 +1803,24 @@ fn render_daemon(frame: &mut Frame, area: Rect, app: &App) {
         fg(WARN),
     )));
 
-    let inner_height = popup.height.saturating_sub(2) as usize;
-    let max_scroll = lines.len().saturating_sub(inner_height);
+    let content_width = popup.width.saturating_sub(4);
+    let content_height = popup.height.saturating_sub(2) as usize;
+    let total = Paragraph::new(Text::from(lines.clone()))
+        .wrap(Wrap { trim: false })
+        .line_count(content_width);
+    let max_scroll = total.saturating_sub(content_height);
     let scroll = app.daemon_scroll.min(max_scroll);
-    let visible: Vec<Line> = lines.into_iter().skip(scroll).take(inner_height).collect();
     let detail = (max_scroll > 0).then_some("↑↓ scroll");
 
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(Text::from(visible))
+        Paragraph::new(Text::from(lines))
             .block(pane_block("Daemon", detail, true, ACCENT))
-            .wrap(Wrap { trim: false }),
+            .wrap(Wrap { trim: false })
+            .scroll((scroll as u16, 0)),
         popup,
     );
+    scrollbar(frame, popup, total, content_height, scroll);
 }
 
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
@@ -2277,6 +2326,65 @@ mod tests {
     }
 
     #[test]
+    fn input_prompt_keeps_buttons_at_minimum_size() {
+        let mut app = app();
+        app.run(Action::DiskCheck);
+        let frame = render_app(&mut app, 48, 12);
+        assert!(frame.contains("continue"));
+        assert!(frame.contains("cancel"));
+
+        app.input_text = "x".repeat(200);
+        let frame = render_app(&mut app, 48, 12);
+        assert!(frame.contains("continue"));
+        assert!(frame.contains("cancel"));
+    }
+
+    #[test]
+    fn status_modal_scrolls_to_the_last_tool_at_minimum_size() {
+        let mut app = app();
+        app.open_status_report(crate::data::StatusReport {
+            storage: "github".into(),
+            target: "me/backups @ main".into(),
+            compression: "xz".into(),
+            max_backups: 5,
+            schedule: "daily 04:05".into(),
+            cli_version: Some("termux-sync v1.3.9".into()),
+            config_path: "~/.config/termux-sync/config.json".into(),
+            log_path: "~/.config/termux-sync/sync.log".into(),
+            history_path: "~/.config/termux-sync/tui-history.json".into(),
+            tools: ["python3", "dpkg", "tar", "rclone", "git", "curl"]
+                .into_iter()
+                .map(|name| crate::data::ToolStatus {
+                    name,
+                    path: None,
+                    required: name != "rclone",
+                })
+                .collect(),
+        });
+        app.status_scroll = usize::MAX;
+        let frame = render_app(&mut app, 48, 12);
+        assert!(frame.contains("curl"));
+    }
+
+    #[test]
+    fn daemon_modal_scrolls_to_the_safety_line_at_minimum_size() {
+        let mut app = app();
+        app.open_daemon();
+        app.daemon_scroll = usize::MAX;
+        let frame = render_app(&mut app, 48, 12);
+        assert!(frame.contains("does not start or stop"));
+    }
+
+    #[test]
+    fn daemon_modal_names_the_command_that_creates_the_boot_script() {
+        let mut app = app();
+        app.open_daemon();
+        app.daemon_boot_present = false;
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("termux-sync schedule"));
+    }
+
+    #[test]
     fn status_modal_shows_backend_target_and_missing_tool() {
         let mut app = app();
         app.open_status_report(crate::data::StatusReport {
@@ -2304,9 +2412,13 @@ mod tests {
     }
 
     #[test]
-    fn output_title_shows_the_log_line_count() {
-        let frame = render_at(100, 30);
-        assert!(frame.contains("log 200"));
+    fn output_title_shows_the_visible_log_line_count() {
+        let mut app = app();
+        app.output = vec!["line".to_string(); 120];
+        app.log_lines = 200;
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("log 120"));
+        assert!(!frame.contains("log 200"));
     }
 
     #[test]

@@ -343,6 +343,7 @@ pub struct App {
     pub daemon_scroll: usize,
     pub daemon_log: Vec<String>,
     pub daemon_boot_present: bool,
+    pub preserve_output: bool,
     pub should_quit: bool,
     pub pending: Option<Vec<String>>,
     pub worker: Worker,
@@ -421,6 +422,7 @@ impl App {
             daemon_scroll: 0,
             daemon_log: Vec::new(),
             daemon_boot_present: false,
+            preserve_output: false,
             should_quit: false,
             pending: None,
             worker: Worker::default(),
@@ -1358,8 +1360,10 @@ impl App {
         if self.output_source == OutputSource::Log {
             self.output = data::tail_log(self.log_lines);
             self.output_offset = 0;
+            self.status = format!("log {} lines", self.output.len());
+        } else {
+            self.status = format!("log limit {} lines", self.log_lines);
         }
-        self.status = format!("log {} lines", self.log_lines);
     }
 
     fn move_action(&mut self, delta: isize) {
@@ -1425,7 +1429,7 @@ impl App {
                 self.output = data::tail_log(self.log_lines);
                 self.output_offset = 0;
                 self.switch_focus(Focus::Output);
-                self.status = format!("showing sync.log · {} lines", self.log_lines);
+                self.status = format!("showing sync.log · {} lines", self.output.len());
             }
             Action::ClearLogs => self.pending_confirm = Some(Action::ClearLogs),
             Action::Status => self.open_status(),
@@ -1580,6 +1584,9 @@ impl App {
                 self.output_offset = 0;
                 self.switch_focus(Focus::Output);
                 self.status = format!("termux-sync {title} finished");
+                if title.starts_with("clear-logs") {
+                    self.preserve_output = true;
+                }
                 if title.starts_with("delete")
                     || title.starts_with("clear-cache")
                     || title.starts_with("clear-logs")
@@ -1617,16 +1624,21 @@ impl App {
             .pending_select
             .take()
             .or_else(|| self.selected_backup().map(|backup| backup.name.clone()));
+        let keep_output = std::mem::take(&mut self.preserve_output);
 
         self.loading = false;
-        self.status = snapshot
-            .warning
-            .clone()
-            .unwrap_or_else(|| "refreshed".to_string());
+        if !keep_output {
+            self.status = snapshot
+                .warning
+                .clone()
+                .unwrap_or_else(|| "refreshed".to_string());
+        }
         self.snapshot = snapshot;
-        self.output = self.snapshot.log.clone();
-        self.output_source = OutputSource::Log;
-        self.output_offset = 0;
+        if !keep_output {
+            self.output = data::tail_log(self.log_lines);
+            self.output_source = OutputSource::Log;
+            self.output_offset = 0;
+        }
 
         if self.snapshot.backups.is_empty() {
             self.backup_state.select(None);
@@ -2124,6 +2136,22 @@ mod tests {
         assert_eq!(app.log_lines, 400);
         app.handle_key(KeyCode::Char('['));
         assert_eq!(app.log_lines, 200);
+    }
+
+    #[test]
+    fn apply_snapshot_preserves_clear_logs_output() {
+        let mut app = App::with_snapshot(snapshot());
+        app.output = vec!["Log file does not exist — nothing to clear.".to_string()];
+        app.status = "termux-sync clear-logs finished".to_string();
+        app.preserve_output = true;
+        app.apply_snapshot(snapshot());
+        assert!(
+            app.output
+                .iter()
+                .any(|line| line.contains("nothing to clear"))
+        );
+        assert_eq!(app.status, "termux-sync clear-logs finished");
+        assert!(!app.preserve_output);
     }
 
     #[test]
