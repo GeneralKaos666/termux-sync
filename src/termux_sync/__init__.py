@@ -2828,7 +2828,7 @@ def cmd_logs(lines: int = 40):
             console.print(f"  [dim]{safe}[/dim]")
 
 
-def cmd_clear_logs():
+def cmd_clear_logs(assume_yes: bool = False):
     print_section("CLEAR LOGS", str(LOG_FILE))
     if not LOG_FILE.exists():
         console.print("  [dim]Log file does not exist — nothing to clear.[/dim]\n")
@@ -2838,7 +2838,7 @@ def cmd_clear_logs():
     console.print(f"  Log file : [white]{LOG_FILE}[/white]")
     console.print(f"  Size     : [bold yellow]{human_size(size)}[/bold yellow]\n")
 
-    if not Confirm.ask("  [bold]Clear all log entries?[/bold]", default=False):
+    if not assume_yes and not Confirm.ask("  [bold]Clear all log entries?[/bold]", default=False):
         console.print("  [dim]Cancelled.[/dim]\n")
         return
 
@@ -3168,7 +3168,7 @@ OPTIONS = [
     ("-n, --name NAME",   "Backup name to restore / delete"),
     ("--lines N",         "Lines to show in logs (default 40)"),
     ("--json-events",     "Emit JSON progress events (used by the TUI)"),
-    ("--yes",             "Skip delete / clear-cache confirmations"),
+    ("--yes",             "Skip delete / clear-logs / clear-cache confirmations"),
     ("--debug",           "Show the full traceback if something fails"),
     ("-v, --version",     "Print version and exit"),
     ("-h, --help",        "Show this help"),
@@ -3306,7 +3306,8 @@ def main(argv=None):
             "daemon":        lambda: cmd_daemon(cfg),
             "status":        lambda: cmd_status(cfg),
             "logs":          lambda: cmd_logs(args.lines),
-            "clear-logs":    lambda: cmd_clear_logs(),
+            "clear-logs":    lambda: cmd_clear_logs(
+                assume_yes=getattr(args, "yes", False)),
             "check":         lambda: cmd_check(args.target or ""),
             "clear-cache":   lambda: cmd_clear_cache(
                 assume_yes=getattr(args, "yes", False)),

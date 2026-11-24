@@ -282,6 +282,22 @@ def test_clear_logs_cancelled(config_home, answers):
     assert "keep me" in (config_home / "sync.log").read_text()
 
 
+def test_clear_logs_assume_yes_skips_confirmation(config_home, answers, capsys):
+    ts.log("INFO", "remove me")
+    answers(confirm=False)
+    ts.cmd_clear_logs(assume_yes=True)
+    remaining = (config_home / "sync.log").read_text()
+    assert "remove me" not in remaining
+    assert "Log file cleared by user" in remaining
+    assert "Log file cleared" in capsys.readouterr().out
+
+
+def test_clear_logs_without_a_log_file_reports_nothing(config_home, capsys):
+    (config_home / "sync.log").unlink(missing_ok=True)
+    ts.cmd_clear_logs(assume_yes=True)
+    assert "nothing to clear" in capsys.readouterr().out.lower()
+
+
 def test_dir_size_counts_files_and_skips_symlinks(tmp_path):
     (tmp_path / "a.bin").write_bytes(b"x" * 100)
     (tmp_path / "sub").mkdir()

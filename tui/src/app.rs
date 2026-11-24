@@ -54,6 +54,7 @@ pub enum Action {
     Delete,
     List,
     Logs,
+    ClearLogs,
     DiskCheck,
     ExportConfig,
     ImportConfig,
@@ -155,6 +156,12 @@ pub const ACTIONS: &[ActionItem] = &[
         ascii: "#",
         label: "Show logs",
         action: Action::Logs,
+    },
+    ActionItem {
+        glyph: "⌫",
+        ascii: "-",
+        label: "Clear logs",
+        action: Action::ClearLogs,
     },
     ActionItem {
         glyph: "◔",
@@ -1309,6 +1316,7 @@ impl App {
                 self.switch_focus(Focus::Output);
                 self.status = "showing sync.log".to_string();
             }
+            Action::ClearLogs => self.pending_confirm = Some(Action::ClearLogs),
             Action::DiskCheck => {
                 self.pending_input = Some(InputPrompt::CheckTarget);
                 self.input_text = InputPrompt::CheckTarget.seed().to_string();
@@ -1381,6 +1389,19 @@ impl App {
                             .to_string();
                 }
             }
+            Action::ClearLogs => {
+                if yes_supported {
+                    self.start_task(Task::Command(vec![
+                        "clear-logs".to_string(),
+                        "--yes".to_string(),
+                    ]));
+                } else {
+                    self.queue_command(vec!["clear-logs"]);
+                    self.status =
+                        "termux-sync is too old for in-TUI clear-logs; using CLI confirmation"
+                            .to_string();
+                }
+            }
             _ => {}
         }
     }
@@ -1447,6 +1468,7 @@ impl App {
                 self.status = format!("termux-sync {title} finished");
                 if title.starts_with("delete")
                     || title.starts_with("clear-cache")
+                    || title.starts_with("clear-logs")
                     || title.starts_with("import-config")
                 {
                     self.refresh();
@@ -1939,6 +1961,20 @@ mod tests {
             + 1;
         app.handle_mouse(2, help_row);
         assert!(app.show_help);
+    }
+
+    #[test]
+    fn clear_logs_confirms_inside_the_tui() {
+        let mut app = App::with_snapshot(snapshot());
+        app.run(Action::ClearLogs);
+        assert_eq!(app.pending_confirm, Some(Action::ClearLogs));
+    }
+
+    #[test]
+    fn confirmed_clear_logs_falls_back_without_yes() {
+        let mut app = App::with_snapshot(snapshot());
+        app.execute_confirmed_action_with(Action::ClearLogs, false);
+        assert_eq!(app.pending, Some(vec!["clear-logs".to_string()]));
     }
 
     #[test]

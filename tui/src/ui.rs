@@ -231,6 +231,7 @@ fn render_action_confirm(frame: &mut Frame, area: Rect, app: &mut App, action: A
             ),
         ),
         Action::ClearCache => ("Clear cache", "Clear all cache directories?".to_string()),
+        Action::ClearLogs => ("Clear logs", "Clear all log entries?".to_string()),
         _ => return,
     };
     let popup = centered(area, area.width.saturating_sub(6).clamp(32, 58), 8);
