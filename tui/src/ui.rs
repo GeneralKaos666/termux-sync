@@ -99,6 +99,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         render_history(frame, area, app);
     }
 
+    if app.show_status {
+        render_status(frame, area, app);
+    }
+
     if app.task.as_ref().is_some_and(|task| task.visible) {
         render_task(frame, area, app);
     }
@@ -1610,6 +1614,86 @@ fn render_history(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+fn render_status(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(report) = &app.status_report else {
+        return;
+    };
+    let popup = centered(
+        area,
+        area.width.saturating_sub(4).clamp(24, 72),
+        area.height.saturating_sub(2).clamp(10, 24),
+    );
+    let mut lines = vec![
+        Line::from(Span::styled("STATUS", fg(ACCENT).bold())),
+        Line::from(vec![
+            Span::styled("Storage      ", fg(MUTED)),
+            Span::styled(report.storage.to_uppercase(), fg(Color::Reset).bold()),
+        ]),
+        Line::from(vec![
+            Span::styled("Target       ", fg(MUTED)),
+            Span::raw(report.target.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("Compression  ", fg(MUTED)),
+            Span::raw(format!(
+                "{} · keep {}",
+                report.compression, report.max_backups
+            )),
+        ]),
+        Line::from(vec![
+            Span::styled("Auto-backup  ", fg(MUTED)),
+            Span::raw(report.schedule.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("Versions     ", fg(MUTED)),
+            Span::raw(format!(
+                "TUI {} · CLI {}",
+                env!("CARGO_PKG_VERSION"),
+                report.cli_version.as_deref().unwrap_or("not found")
+            )),
+        ]),
+        Line::from(vec![
+            Span::styled("Config       ", fg(MUTED)),
+            Span::raw(report.config_path.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("Log          ", fg(MUTED)),
+            Span::raw(report.log_path.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("History      ", fg(MUTED)),
+            Span::raw(report.history_path.clone()),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("TOOLS", fg(ACCENT).bold())),
+    ];
+    for tool in &report.tools {
+        let (text, color) = match &tool.path {
+            Some(path) => (path.display().to_string(), SUCCESS),
+            None if tool.required => ("missing".to_string(), DANGER),
+            None => ("missing (optional)".to_string(), MUTED),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:<12}", tool.name), fg(MUTED)),
+            Span::styled(text, fg(color)),
+        ]));
+    }
+
+    let inner_height = popup.height.saturating_sub(2) as usize;
+    let max_scroll = lines.len().saturating_sub(inner_height);
+    let scroll = app.status_scroll.min(max_scroll);
+    let visible: Vec<Line> = lines.into_iter().skip(scroll).take(inner_height).collect();
+    let detail = (max_scroll > 0).then_some("↑↓ scroll");
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(Text::from(visible))
+            .block(pane_block("Status", detail, true, ACCENT))
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
+}
+
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     let width = area.width.saturating_sub(2).clamp(20, 64);
     let height = area.height.saturating_sub(2).clamp(7, 22);
@@ -2090,6 +2174,33 @@ mod tests {
         assert!(frame.contains("Backup label"));
         assert!(frame.contains("Used in the manifest and backup name."));
         assert!(frame.contains("Enter"));
+    }
+
+    #[test]
+    fn status_modal_shows_backend_target_and_missing_tool() {
+        let mut app = app();
+        app.open_status_report(crate::data::StatusReport {
+            storage: "github".into(),
+            target: "me/backups @ main".into(),
+            compression: "xz".into(),
+            max_backups: 5,
+            schedule: "daily 04:05".into(),
+            cli_version: Some("termux-sync v1.3.9".into()),
+            config_path: "~/.config/termux-sync/config.json".into(),
+            log_path: "~/.config/termux-sync/sync.log".into(),
+            history_path: "~/.config/termux-sync/tui-history.json".into(),
+            tools: vec![crate::data::ToolStatus {
+                name: "rclone",
+                path: None,
+                required: true,
+            }],
+        });
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("STATUS"));
+        assert!(frame.contains("GITHUB"));
+        assert!(frame.contains("me/backups @ main"));
+        assert!(frame.contains("rclone"));
+        assert!(frame.contains("missing"));
     }
 
     #[test]

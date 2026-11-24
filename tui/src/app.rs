@@ -55,6 +55,7 @@ pub enum Action {
     List,
     Logs,
     ClearLogs,
+    Status,
     DiskCheck,
     ExportConfig,
     ImportConfig,
@@ -162,6 +163,12 @@ pub const ACTIONS: &[ActionItem] = &[
         ascii: "-",
         label: "Clear logs",
         action: Action::ClearLogs,
+    },
+    ActionItem {
+        glyph: "◉",
+        ascii: "i",
+        label: "Status",
+        action: Action::Status,
     },
     ActionItem {
         glyph: "◔",
@@ -314,6 +321,9 @@ pub struct App {
     pub output_offset: usize,
     pub status: String,
     pub show_help: bool,
+    pub show_status: bool,
+    pub status_scroll: usize,
+    pub status_report: Option<data::StatusReport>,
     pub should_quit: bool,
     pub pending: Option<Vec<String>>,
     pub worker: Worker,
@@ -383,6 +393,9 @@ impl App {
             output_offset: 0,
             status,
             show_help: false,
+            show_status: false,
+            status_scroll: 0,
+            status_report: None,
             should_quit: false,
             pending: None,
             worker: Worker::default(),
@@ -422,6 +435,17 @@ impl App {
         self.show_help = true;
         self.help_opened_at = self.tick;
         self.help_scroll = 0;
+    }
+
+    pub fn open_status(&mut self) {
+        let report = data::collect_status(&self.snapshot.config);
+        self.open_status_report(report);
+    }
+
+    pub fn open_status_report(&mut self, report: data::StatusReport) {
+        self.status_report = Some(report);
+        self.show_status = true;
+        self.status_scroll = 0;
     }
 
     pub fn help_progress(&self) -> f32 {
@@ -534,6 +558,7 @@ impl App {
             self.input_text.clear();
             self.pending_handoff = None;
             self.show_history = false;
+            self.show_status = false;
             self.should_quit = true;
             return;
         }
@@ -600,6 +625,22 @@ impl App {
                         }
                     }
                 }
+                _ => {}
+            }
+            return;
+        }
+        if self.show_status {
+            match code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                    self.show_status = false;
+                    self.status_scroll = 0;
+                }
+                KeyCode::Down | KeyCode::Char('j') => self.status_scroll += 1,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.status_scroll = self.status_scroll.saturating_sub(1);
+                }
+                KeyCode::PageDown => self.status_scroll += 5,
+                KeyCode::PageUp => self.status_scroll = self.status_scroll.saturating_sub(5),
                 _ => {}
             }
             return;
@@ -1038,6 +1079,7 @@ impl App {
             || self.pending_input.is_some()
             || self.pending_handoff.is_some()
             || self.show_history
+            || self.show_status
         {
             return;
         }
@@ -1079,6 +1121,9 @@ impl App {
 
     pub fn handle_mouse(&mut self, column: u16, row: u16) {
         let point = Position::new(column, row);
+        if self.show_status {
+            return;
+        }
         if self.pending_handoff.is_some() {
             if self.handoff_yes.contains(point) {
                 if let Some(handoff) = self.pending_handoff.take() {
@@ -1317,6 +1362,7 @@ impl App {
                 self.status = "showing sync.log".to_string();
             }
             Action::ClearLogs => self.pending_confirm = Some(Action::ClearLogs),
+            Action::Status => self.open_status(),
             Action::DiskCheck => {
                 self.pending_input = Some(InputPrompt::CheckTarget);
                 self.input_text = InputPrompt::CheckTarget.seed().to_string();
@@ -1961,6 +2007,31 @@ mod tests {
             + 1;
         app.handle_mouse(2, help_row);
         assert!(app.show_help);
+    }
+
+    #[test]
+    fn status_report_opens_and_closes() {
+        let mut app = App::with_snapshot(snapshot());
+        let report = crate::data::StatusReport {
+            storage: "github".into(),
+            target: "me/backups @ main".into(),
+            compression: "xz".into(),
+            max_backups: 5,
+            schedule: "daily 04:05".into(),
+            cli_version: Some("termux-sync v1.3.9".into()),
+            config_path: "~/.config/termux-sync/config.json".into(),
+            log_path: "~/.config/termux-sync/sync.log".into(),
+            history_path: "~/.config/termux-sync/tui-history.json".into(),
+            tools: vec![crate::data::ToolStatus {
+                name: "rclone",
+                path: None,
+                required: true,
+            }],
+        };
+        app.open_status_report(report);
+        assert!(app.show_status);
+        app.handle_key(KeyCode::Esc);
+        assert!(!app.show_status);
     }
 
     #[test]
