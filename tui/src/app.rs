@@ -191,7 +191,7 @@ pub const ACTIONS: &[ActionItem] = &[
     },
     ActionItem {
         glyph: "⇩",
-        ascii: "<",
+        ascii: "v",
         label: "Import config",
         action: Action::ImportConfig,
     },
@@ -215,7 +215,7 @@ pub const ACTIONS: &[ActionItem] = &[
     },
     ActionItem {
         glyph: "◇",
-        ascii: "-",
+        ascii: "c",
         label: "Clear cache",
         action: Action::ClearCache,
     },
@@ -243,12 +243,14 @@ pub enum Task {
     Refresh,
     Command(Vec<String>),
     ListBackups,
+    Status(data::Config),
 }
 
 pub enum WorkerMsg {
     Refreshed(Snapshot),
     Output { title: String, text: String },
     Backups(Vec<Backup>),
+    Status(data::StatusReport),
 }
 
 #[derive(Default)]
@@ -279,6 +281,7 @@ impl Worker {
             let result = match task {
                 Task::Refresh => Ok(WorkerMsg::Refreshed(data::load_snapshot())),
                 Task::ListBackups => crate::ops::collect_backups().map(WorkerMsg::Backups),
+                Task::Status(config) => Ok(WorkerMsg::Status(data::collect_status(&config))),
                 Task::Command(args) => data::run_captured(&args).map(|text| WorkerMsg::Output {
                     title: args.join(" "),
                     text,
@@ -338,9 +341,11 @@ pub struct App {
     pub show_help: bool,
     pub show_status: bool,
     pub status_scroll: usize,
+    pub status_scroll_max: usize,
     pub status_report: Option<data::StatusReport>,
     pub show_daemon: bool,
     pub daemon_scroll: usize,
+    pub daemon_scroll_max: usize,
     pub daemon_log: Vec<String>,
     pub daemon_boot_present: bool,
     pub preserve_output: bool,
@@ -417,9 +422,11 @@ impl App {
             show_help: false,
             show_status: false,
             status_scroll: 0,
+            status_scroll_max: 0,
             status_report: None,
             show_daemon: false,
             daemon_scroll: 0,
+            daemon_scroll_max: 0,
             daemon_log: Vec::new(),
             daemon_boot_present: false,
             preserve_output: false,
@@ -462,11 +469,6 @@ impl App {
         self.show_help = true;
         self.help_opened_at = self.tick;
         self.help_scroll = 0;
-    }
-
-    pub fn open_status(&mut self) {
-        let report = data::collect_status(&self.snapshot.config);
-        self.open_status_report(report);
     }
 
     pub fn open_status_report(&mut self, report: data::StatusReport) {
@@ -670,11 +672,21 @@ impl App {
                     self.show_status = false;
                     self.status_scroll = 0;
                 }
-                KeyCode::Down | KeyCode::Char('j') => self.status_scroll += 1,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.status_scroll = self
+                        .status_scroll
+                        .saturating_add(1)
+                        .min(self.status_scroll_max);
+                }
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.status_scroll = self.status_scroll.saturating_sub(1);
                 }
-                KeyCode::PageDown => self.status_scroll += 5,
+                KeyCode::PageDown => {
+                    self.status_scroll = self
+                        .status_scroll
+                        .saturating_add(5)
+                        .min(self.status_scroll_max);
+                }
                 KeyCode::PageUp => self.status_scroll = self.status_scroll.saturating_sub(5),
                 _ => {}
             }
@@ -686,11 +698,21 @@ impl App {
                     self.show_daemon = false;
                     self.daemon_scroll = 0;
                 }
-                KeyCode::Down | KeyCode::Char('j') => self.daemon_scroll += 1,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.daemon_scroll = self
+                        .daemon_scroll
+                        .saturating_add(1)
+                        .min(self.daemon_scroll_max);
+                }
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.daemon_scroll = self.daemon_scroll.saturating_sub(1);
                 }
-                KeyCode::PageDown => self.daemon_scroll += 5,
+                KeyCode::PageDown => {
+                    self.daemon_scroll = self
+                        .daemon_scroll
+                        .saturating_add(5)
+                        .min(self.daemon_scroll_max);
+                }
                 KeyCode::PageUp => self.daemon_scroll = self.daemon_scroll.saturating_sub(5),
                 _ => {}
             }
@@ -1432,7 +1454,7 @@ impl App {
                 self.status = format!("showing sync.log · {} lines", self.output.len());
             }
             Action::ClearLogs => self.pending_confirm = Some(Action::ClearLogs),
-            Action::Status => self.open_status(),
+            Action::Status => self.start_task(Task::Status(self.snapshot.config.clone())),
             Action::DiskCheck => {
                 self.pending_input = Some(InputPrompt::CheckTarget);
                 self.input_text = InputPrompt::CheckTarget.seed().to_string();
@@ -1508,10 +1530,7 @@ impl App {
             }
             Action::ClearLogs => {
                 if yes_supported {
-                    self.start_task(Task::Command(vec![
-                        "clear-logs".to_string(),
-                        "--yes".to_string(),
-                    ]));
+                    self.start_task(Task::Command(clear_logs_command(true)));
                 } else {
                     self.queue_command(vec!["clear-logs"]);
                     self.status =
@@ -1538,6 +1557,7 @@ impl App {
             Task::Refresh => "refreshing".to_string(),
             Task::Command(args) => format!("termux-sync {}", args.join(" ")),
             Task::ListBackups => "listing backups".to_string(),
+            Task::Status(_) => "collecting status".to_string(),
         };
         let show_overlay = matches!(&task, Task::Command(_));
         if self.worker.start(task) {
@@ -1576,6 +1596,10 @@ impl App {
         match result {
             Ok(WorkerMsg::Refreshed(snapshot)) => self.apply_snapshot(snapshot),
             Ok(WorkerMsg::Backups(backups)) => self.apply_backup_list(backups),
+            Ok(WorkerMsg::Status(report)) => {
+                self.open_status_report(report);
+                self.status = "status ready".to_string();
+            }
             Ok(WorkerMsg::Output { title, text }) => {
                 self.output_source = OutputSource::Command;
                 self.output.clear();
@@ -1587,11 +1611,7 @@ impl App {
                 if title.starts_with("clear-logs") {
                     self.preserve_output = true;
                 }
-                if title.starts_with("delete")
-                    || title.starts_with("clear-cache")
-                    || title.starts_with("clear-logs")
-                    || title.starts_with("import-config")
-                {
+                if should_refresh_after(&title) {
                     self.refresh();
                 }
             }
@@ -1698,11 +1718,20 @@ pub fn restore_command(name: &str) -> Vec<String> {
 }
 
 pub fn export_config_command(path: &str) -> Vec<String> {
-    vec!["export-config".to_string(), path.to_string()]
+    path_command("export-config", path)
 }
 
 pub fn import_config_command(path: &str) -> Vec<String> {
-    vec!["import-config".to_string(), path.to_string()]
+    path_command("import-config", path)
+}
+
+fn path_command(command: &str, path: &str) -> Vec<String> {
+    let mut args = vec![command.to_string()];
+    if path.starts_with('-') {
+        args.push("--".to_string());
+    }
+    args.push(path.to_string());
+    args
 }
 
 pub fn check_command(target: &str) -> Vec<String> {
@@ -1710,8 +1739,22 @@ pub fn check_command(target: &str) -> Vec<String> {
     if target.is_empty() {
         vec!["check".to_string()]
     } else {
-        vec!["check".to_string(), target.to_string()]
+        path_command("check", target)
     }
+}
+
+pub fn clear_logs_command(yes_supported: bool) -> Vec<String> {
+    let mut args = vec!["clear-logs".to_string()];
+    if yes_supported {
+        args.push("--yes".to_string());
+    }
+    args
+}
+
+pub fn should_refresh_after(title: &str) -> bool {
+    ["delete", "clear-cache", "clear-logs", "import-config"]
+        .iter()
+        .any(|prefix| title.starts_with(prefix))
 }
 
 pub fn input_command(prompt: InputPrompt, text: &str) -> Option<Vec<String>> {
@@ -2136,6 +2179,84 @@ mod tests {
         assert_eq!(app.log_lines, 400);
         app.handle_key(KeyCode::Char('['));
         assert_eq!(app.log_lines, 200);
+    }
+
+    #[test]
+    fn ascii_action_glyphs_are_unique() {
+        let mut seen = Vec::new();
+        for item in ACTIONS {
+            assert!(
+                !seen.contains(&item.ascii),
+                "duplicate ASCII glyph {}",
+                item.ascii
+            );
+            seen.push(item.ascii);
+        }
+    }
+
+    #[test]
+    fn leading_dash_paths_are_escaped_before_the_cli_sees_them() {
+        assert_eq!(
+            export_config_command("-x"),
+            vec!["export-config", "--", "-x"]
+        );
+        assert_eq!(
+            import_config_command("--json-events"),
+            vec!["import-config", "--", "--json-events"]
+        );
+        assert_eq!(check_command("-x"), vec!["check", "--", "-x"]);
+        assert_eq!(
+            export_config_command("~/export.json"),
+            vec!["export-config", "~/export.json"]
+        );
+    }
+
+    #[test]
+    fn clear_logs_command_includes_yes_only_when_supported() {
+        assert_eq!(
+            clear_logs_command(true),
+            vec!["clear-logs".to_string(), "--yes".to_string()]
+        );
+        assert_eq!(clear_logs_command(false), vec!["clear-logs".to_string()]);
+    }
+
+    #[test]
+    fn refresh_follows_only_commands_that_change_the_snapshot() {
+        assert!(should_refresh_after("delete --name b1 --yes"));
+        assert!(should_refresh_after("clear-cache --yes"));
+        assert!(should_refresh_after("clear-logs --yes"));
+        assert!(should_refresh_after("import-config ~/export.json"));
+        assert!(!should_refresh_after("export-config ~/export.json"));
+        assert!(!should_refresh_after("check ~"));
+    }
+
+    #[test]
+    fn empty_import_submit_keeps_the_prompt_open() {
+        let mut app = App::with_snapshot(snapshot());
+        app.run(Action::ImportConfig);
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.pending_input, Some(InputPrompt::ImportConfig));
+        assert_eq!(app.status, "enter a path");
+        assert!(app.pending.is_none());
+    }
+
+    #[test]
+    fn modal_scroll_stops_at_the_rendered_limit() {
+        let mut app = App::with_snapshot(snapshot());
+        app.status_scroll_max = 3;
+        app.show_status = true;
+        for _ in 0..10 {
+            app.handle_key(KeyCode::Down);
+        }
+        assert_eq!(app.status_scroll, 3);
+
+        app.show_status = false;
+        app.show_daemon = true;
+        app.daemon_scroll_max = 2;
+        for _ in 0..10 {
+            app.handle_key(KeyCode::Down);
+        }
+        assert_eq!(app.daemon_scroll, 2);
     }
 
     #[test]

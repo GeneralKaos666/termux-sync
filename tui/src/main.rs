@@ -188,10 +188,15 @@ Keys:
   s          status
   /          filter backups
   h          operation history
-  [ / ]      fewer / more log lines
+  [ / ]      Output pane: fewer / more log lines
   ?          help
   q          quit
   Ctrl+C     quit dashboard; cancel a running backup; refused during protected restore
+
+Actions:
+  backup, restore, delete, list, logs, clear logs, status, disk check,
+  export/import config, daemon, setup, schedule, clear cache.
+  Setup and schedule open a handoff card.
 
 Options:
   --no-anim  disable motion (also TERMUX_SYNC_TUI_REDUCED_MOTION=1)

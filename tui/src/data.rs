@@ -461,10 +461,17 @@ pub fn probe_tools(storage: &str, paths: &[PathBuf]) -> Vec<ToolStatus> {
 pub fn cli_version() -> Option<String> {
     let args = vec!["--version".to_string()];
     let output = cli_command(&args).output().ok()?;
-    String::from_utf8_lossy(&output.stdout)
+    parse_cli_version(output.status.success(), &output.stdout)
+}
+
+pub fn parse_cli_version(success: bool, stdout: &[u8]) -> Option<String> {
+    if !success {
+        return None;
+    }
+    String::from_utf8_lossy(stdout)
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty())
+        .find(|line| line.starts_with("termux-sync"))
         .map(str::to_string)
 }
 
@@ -699,6 +706,16 @@ mod tests {
             shorten_path(&prefix.join("bin/tar"), home, prefix),
             "$PREFIX/bin/tar"
         );
+    }
+
+    #[test]
+    fn cli_version_rejects_failed_or_unrelated_output() {
+        assert_eq!(
+            parse_cli_version(true, b"termux-sync v1.3.9\n"),
+            Some("termux-sync v1.3.9".to_string())
+        );
+        assert_eq!(parse_cli_version(false, b"termux-sync v1.3.9\n"), None);
+        assert_eq!(parse_cli_version(true, b"GNU coreutils 9.7\n"), None);
     }
 
     #[test]

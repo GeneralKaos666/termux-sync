@@ -1661,8 +1661,8 @@ fn render_history(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn render_status(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(report) = &app.status_report else {
+fn render_status(frame: &mut Frame, area: Rect, app: &mut App) {
+    let Some(report) = app.status_report.clone() else {
         return;
     };
     let popup = centered(
@@ -1733,12 +1733,18 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         .line_count(content_width);
     let max_scroll = total.saturating_sub(content_height);
     let scroll = app.status_scroll.min(max_scroll);
-    let detail = (max_scroll > 0).then_some("↑↓ scroll");
+    app.status_scroll = scroll;
+    app.status_scroll_max = max_scroll;
+    let detail = if max_scroll > 0 {
+        "↑↓ scroll · Esc close"
+    } else {
+        "Esc close"
+    };
 
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(Text::from(lines))
-            .block(pane_block("Status", detail, true, ACCENT))
+            .block(pane_block("Status", Some(detail), true, ACCENT))
             .wrap(Wrap { trim: false })
             .scroll((scroll as u16, 0)),
         popup,
@@ -1746,7 +1752,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     scrollbar(frame, popup, total, content_height, scroll);
 }
 
-fn render_daemon(frame: &mut Frame, area: Rect, app: &App) {
+fn render_daemon(frame: &mut Frame, area: Rect, app: &mut App) {
     let popup = centered(
         area,
         area.width.saturating_sub(4).clamp(24, 72),
@@ -1764,15 +1770,11 @@ fn render_daemon(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(Span::styled("DAEMON", fg(ACCENT).bold())),
         Line::from(vec![
             Span::styled("Auto-backup     ", fg(MUTED)),
-            Span::raw(format!(
-                "{} {}",
-                if app.snapshot.config.schedule == "off" {
-                    "DISABLED"
-                } else {
-                    "ENABLED"
-                },
-                app.snapshot.config.schedule
-            )),
+            Span::raw(if app.snapshot.config.schedule == "off" {
+                "DISABLED".to_string()
+            } else {
+                format!("ENABLED {}", app.snapshot.config.schedule)
+            }),
         ]),
         Line::from(vec![
             Span::styled("Boot script     ", fg(MUTED)),
@@ -1810,12 +1812,18 @@ fn render_daemon(frame: &mut Frame, area: Rect, app: &App) {
         .line_count(content_width);
     let max_scroll = total.saturating_sub(content_height);
     let scroll = app.daemon_scroll.min(max_scroll);
-    let detail = (max_scroll > 0).then_some("↑↓ scroll");
+    app.daemon_scroll = scroll;
+    app.daemon_scroll_max = max_scroll;
+    let detail = if max_scroll > 0 {
+        "↑↓ scroll · Esc close"
+    } else {
+        "Esc close"
+    };
 
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(Text::from(lines))
-            .block(pane_block("Daemon", detail, true, ACCENT))
+            .block(pane_block("Daemon", Some(detail), true, ACCENT))
             .wrap(Wrap { trim: false })
             .scroll((scroll as u16, 0)),
         popup,
@@ -1843,7 +1851,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         ("/", "filter backups"),
         ("h", "operation history"),
         ("g / G", "top / bottom of output"),
-        ("[ / ]", "fewer / more log lines"),
+        ("[ / ]", "fewer / more log lines (Output pane)"),
         ("?  / Esc", "close this help"),
         ("↑ / ↓", "scroll this help"),
         ("Ctrl+C", "quit immediately"),
@@ -2323,6 +2331,41 @@ mod tests {
         assert!(frame.contains("Clear logs"));
         assert!(frame.contains("Export/import config"));
         assert!(frame.contains("Daemon"));
+    }
+
+    #[test]
+    fn status_and_daemon_modals_document_escape_to_close() {
+        let mut app = app();
+        app.show_status = true;
+        app.status_report = Some(crate::data::StatusReport {
+            storage: "local".into(),
+            target: "~/termux-backups".into(),
+            compression: "gz".into(),
+            max_backups: 5,
+            schedule: "off".into(),
+            cli_version: None,
+            config_path: "~/.config/termux-sync/config.json".into(),
+            log_path: "~/.config/termux-sync/sync.log".into(),
+            history_path: "~/.config/termux-sync/tui-history.json".into(),
+            tools: Vec::new(),
+        });
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("Esc close"));
+
+        app.show_status = false;
+        app.open_daemon();
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("Esc close"));
+    }
+
+    #[test]
+    fn daemon_disabled_schedule_does_not_repeat_off() {
+        let mut app = app();
+        app.snapshot.config.schedule = "off".into();
+        app.open_daemon();
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("DISABLED"));
+        assert!(!frame.contains("DISABLED off"));
     }
 
     #[test]

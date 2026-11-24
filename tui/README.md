@@ -106,8 +106,8 @@ Use ASCII icons with `--ascii` or `TERMUX_SYNC_TUI_ASCII=1`.
 | `/` | filter backups in the Backups pane |
 | `h` | operation history |
 | `g` / `G` | top / bottom of output |
-| `[` / `]` | fewer / more log lines (40–2000) |
-| any printable | type a backup label when prompted |
+| `[` / `]` | Output pane: fewer / more log lines (40–2000) |
+| any printable | type a backup label or path when prompted |
 | `?` | help |
 | `↑` / `↓` in help | scroll help at small sizes |
 | `Ctrl+C` | quit dashboard; cancel a running backup; refused during protected restore |
