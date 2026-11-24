@@ -61,6 +61,7 @@ pub enum Action {
     ImportConfig,
     Setup,
     Schedule,
+    Daemon,
     ClearCache,
     Refresh,
     Help,
@@ -201,6 +202,12 @@ pub const ACTIONS: &[ActionItem] = &[
         action: Action::Schedule,
     },
     ActionItem {
+        glyph: "◌",
+        ascii: "d",
+        label: "Daemon",
+        action: Action::Daemon,
+    },
+    ActionItem {
         glyph: "◇",
         ascii: "-",
         label: "Clear cache",
@@ -324,6 +331,10 @@ pub struct App {
     pub show_status: bool,
     pub status_scroll: usize,
     pub status_report: Option<data::StatusReport>,
+    pub show_daemon: bool,
+    pub daemon_scroll: usize,
+    pub daemon_log: Vec<String>,
+    pub daemon_boot_present: bool,
     pub should_quit: bool,
     pub pending: Option<Vec<String>>,
     pub worker: Worker,
@@ -396,6 +407,10 @@ impl App {
             show_status: false,
             status_scroll: 0,
             status_report: None,
+            show_daemon: false,
+            daemon_scroll: 0,
+            daemon_log: Vec::new(),
+            daemon_boot_present: false,
             should_quit: false,
             pending: None,
             worker: Worker::default(),
@@ -446,6 +461,13 @@ impl App {
         self.status_report = Some(report);
         self.show_status = true;
         self.status_scroll = 0;
+    }
+
+    pub fn open_daemon(&mut self) {
+        self.daemon_log = data::daemon_activity(&data::tail_log(500));
+        self.daemon_boot_present = data::boot_script_path().is_file();
+        self.show_daemon = true;
+        self.daemon_scroll = 0;
     }
 
     pub fn help_progress(&self) -> f32 {
@@ -559,6 +581,7 @@ impl App {
             self.pending_handoff = None;
             self.show_history = false;
             self.show_status = false;
+            self.show_daemon = false;
             self.should_quit = true;
             return;
         }
@@ -641,6 +664,22 @@ impl App {
                 }
                 KeyCode::PageDown => self.status_scroll += 5,
                 KeyCode::PageUp => self.status_scroll = self.status_scroll.saturating_sub(5),
+                _ => {}
+            }
+            return;
+        }
+        if self.show_daemon {
+            match code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                    self.show_daemon = false;
+                    self.daemon_scroll = 0;
+                }
+                KeyCode::Down | KeyCode::Char('j') => self.daemon_scroll += 1,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.daemon_scroll = self.daemon_scroll.saturating_sub(1);
+                }
+                KeyCode::PageDown => self.daemon_scroll += 5,
+                KeyCode::PageUp => self.daemon_scroll = self.daemon_scroll.saturating_sub(5),
                 _ => {}
             }
             return;
@@ -1080,6 +1119,7 @@ impl App {
             || self.pending_handoff.is_some()
             || self.show_history
             || self.show_status
+            || self.show_daemon
         {
             return;
         }
@@ -1122,6 +1162,9 @@ impl App {
     pub fn handle_mouse(&mut self, column: u16, row: u16) {
         let point = Position::new(column, row);
         if self.show_status {
+            return;
+        }
+        if self.show_daemon {
             return;
         }
         if self.pending_handoff.is_some() {
@@ -1392,6 +1435,7 @@ impl App {
                     detail: "The scheduler asks for a time and save location.",
                 });
             }
+            Action::Daemon => self.open_daemon(),
             Action::ClearCache => self.pending_confirm = Some(Action::ClearCache),
             Action::Refresh => self.refresh(),
             Action::Help => self.open_help(),
@@ -2032,6 +2076,15 @@ mod tests {
         assert!(app.show_status);
         app.handle_key(KeyCode::Esc);
         assert!(!app.show_status);
+    }
+
+    #[test]
+    fn daemon_action_opens_a_status_view() {
+        let mut app = App::with_snapshot(snapshot());
+        app.run(Action::Daemon);
+        assert!(app.show_daemon);
+        app.handle_key(KeyCode::Esc);
+        assert!(!app.show_daemon);
     }
 
     #[test]

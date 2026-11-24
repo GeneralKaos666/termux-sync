@@ -515,6 +515,31 @@ pub fn short_path(path: &Path) -> String {
     shorten_path(path, &home(), &prefix)
 }
 
+pub fn boot_script_path() -> PathBuf {
+    home()
+        .join(".termux")
+        .join("boot")
+        .join("termux-sync-daemon.sh")
+}
+
+pub fn daemon_activity(lines: &[String]) -> Vec<String> {
+    let markers = [
+        "Daemon",
+        "Next backup",
+        "Auto-backup triggered",
+        "Daemon backup failed",
+        "auto-backup was disabled",
+    ];
+    let mut activity: Vec<String> = lines
+        .iter()
+        .filter(|line| markers.iter().any(|marker| line.contains(marker)))
+        .cloned()
+        .collect();
+    let keep = activity.len().saturating_sub(5);
+    activity.drain(..keep);
+    activity
+}
+
 fn string_field(value: &Value, key: &str, default: &str) -> String {
     value
         .get(key)
@@ -674,6 +699,18 @@ mod tests {
             shorten_path(&prefix.join("bin/tar"), home, prefix),
             "$PREFIX/bin/tar"
         );
+    }
+
+    #[test]
+    fn daemon_activity_keeps_only_daemon_lines_and_caps_them() {
+        let lines: Vec<String> = (0..10)
+            .map(|index| format!("line {index} [INFO] Daemon tick {index}"))
+            .chain(std::iter::once("plain line".to_string()))
+            .collect();
+        let activity = daemon_activity(&lines);
+        assert_eq!(activity.len(), 5);
+        assert!(activity.iter().all(|line| line.contains("Daemon")));
+        assert_eq!(activity.last().unwrap(), "line 9 [INFO] Daemon tick 9");
     }
 
     #[test]

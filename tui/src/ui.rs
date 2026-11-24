@@ -103,6 +103,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         render_status(frame, area, app);
     }
 
+    if app.show_daemon {
+        render_daemon(frame, area, app);
+    }
+
     if app.task.as_ref().is_some_and(|task| task.visible) {
         render_task(frame, area, app);
     }
@@ -1694,6 +1698,78 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+fn render_daemon(frame: &mut Frame, area: Rect, app: &App) {
+    let popup = centered(
+        area,
+        area.width.saturating_sub(4).clamp(24, 72),
+        area.height.saturating_sub(2).clamp(10, 24),
+    );
+    let boot = if app.daemon_boot_present {
+        format!(
+            "present {}",
+            crate::data::short_path(&crate::data::boot_script_path())
+        )
+    } else {
+        "missing — install Termux:Boot to create it".to_string()
+    };
+    let mut lines = vec![
+        Line::from(Span::styled("DAEMON", fg(ACCENT).bold())),
+        Line::from(vec![
+            Span::styled("Auto-backup     ", fg(MUTED)),
+            Span::raw(format!(
+                "{} {}",
+                if app.snapshot.config.schedule == "off" {
+                    "DISABLED"
+                } else {
+                    "ENABLED"
+                },
+                app.snapshot.config.schedule
+            )),
+        ]),
+        Line::from(vec![
+            Span::styled("Boot script     ", fg(MUTED)),
+            Span::raw(boot),
+        ]),
+        Line::from(vec![
+            Span::styled("Running state   ", fg(MUTED)),
+            Span::raw("not detectable from the TUI"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Start manually:", fg(ACCENT).bold())),
+        Line::from("termux-sync daemon &"),
+        Line::from("Or install Termux:Boot so the boot script starts it."),
+        Line::from(""),
+        Line::from(Span::styled("RECENT ACTIVITY", fg(ACCENT).bold())),
+    ];
+    if app.daemon_log.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no daemon activity in sync.log",
+            fg(MUTED),
+        )));
+    } else {
+        lines.extend(app.daemon_log.iter().map(|line| Line::from(line.clone())));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "The TUI does not start or stop the daemon.",
+        fg(WARN),
+    )));
+
+    let inner_height = popup.height.saturating_sub(2) as usize;
+    let max_scroll = lines.len().saturating_sub(inner_height);
+    let scroll = app.daemon_scroll.min(max_scroll);
+    let visible: Vec<Line> = lines.into_iter().skip(scroll).take(inner_height).collect();
+    let detail = (max_scroll > 0).then_some("↑↓ scroll");
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(Text::from(visible))
+            .block(pane_block("Daemon", detail, true, ACCENT))
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
+}
+
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     let width = area.width.saturating_sub(2).clamp(20, 64);
     let height = area.height.saturating_sub(2).clamp(7, 22);
@@ -2201,6 +2277,16 @@ mod tests {
         assert!(frame.contains("me/backups @ main"));
         assert!(frame.contains("rclone"));
         assert!(frame.contains("missing"));
+    }
+
+    #[test]
+    fn daemon_modal_states_it_does_not_control_the_process() {
+        let mut app = app();
+        app.open_daemon();
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("DAEMON"));
+        assert!(frame.contains("termux-sync daemon &"));
+        assert!(frame.contains("does not start or stop"));
     }
 
     #[test]
