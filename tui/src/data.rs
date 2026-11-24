@@ -13,6 +13,30 @@ pub struct Config {
     pub compression: String,
     pub max_backups: u64,
     pub schedule: String,
+    pub gdrive_folder_id: String,
+    pub github_repo: String,
+    pub github_branch: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolStatus {
+    pub name: &'static str,
+    pub path: Option<PathBuf>,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusReport {
+    pub storage: String,
+    pub target: String,
+    pub compression: String,
+    pub max_backups: u64,
+    pub schedule: String,
+    pub cli_version: Option<String>,
+    pub config_path: String,
+    pub log_path: String,
+    pub history_path: String,
+    pub tools: Vec<ToolStatus>,
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +169,9 @@ pub fn parse_config(cfg: &Value, schedule: &Value) -> Config {
         compression,
         max_backups,
         schedule,
+        gdrive_folder_id: string_field(cfg, "gdrive_folder_id", ""),
+        github_repo: string_field(cfg, "github_repo", ""),
+        github_branch: string_field(cfg, "github_branch", "main"),
     }
 }
 
@@ -156,6 +183,9 @@ impl Default for Config {
             compression: "gz".to_string(),
             max_backups: 5,
             schedule: "off".to_string(),
+            gdrive_folder_id: String::new(),
+            github_repo: String::new(),
+            github_branch: "main".to_string(),
         }
     }
 }
@@ -379,6 +409,114 @@ pub fn human_size(bytes: u64) -> String {
     format!("{value:.1} TB")
 }
 
+pub fn status_target(config: &Config) -> String {
+    match config.storage.as_str() {
+        "local" => config.local_path.clone(),
+        "gdrive" => {
+            if config.gdrive_folder_id.is_empty() {
+                "(root)".to_string()
+            } else {
+                config.gdrive_folder_id.clone()
+            }
+        }
+        "github" => {
+            if config.github_repo.is_empty() {
+                "—".to_string()
+            } else if config.github_branch.is_empty() {
+                config.github_repo.clone()
+            } else {
+                format!("{} @ {}", config.github_repo, config.github_branch)
+            }
+        }
+        _ => "—".to_string(),
+    }
+}
+
+pub fn which_in(name: &str, paths: &[PathBuf]) -> Option<PathBuf> {
+    paths
+        .iter()
+        .map(|path| path.join(name))
+        .find(|path| path.is_file())
+}
+
+pub fn probe_tools(storage: &str, paths: &[PathBuf]) -> Vec<ToolStatus> {
+    let entries = [
+        ("python3", true),
+        ("dpkg", true),
+        ("tar", true),
+        ("rclone", storage == "gdrive"),
+        ("git", true),
+        ("curl", true),
+    ];
+    entries
+        .into_iter()
+        .map(|(name, required)| ToolStatus {
+            name,
+            path: which_in(name, paths),
+            required,
+        })
+        .collect()
+}
+
+pub fn cli_version() -> Option<String> {
+    let args = vec!["--version".to_string()];
+    let output = cli_command(&args).output().ok()?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
+pub fn collect_status(config: &Config) -> StatusReport {
+    let paths: Vec<PathBuf> = env::var_os("PATH")
+        .map(|value| env::split_paths(&value).collect())
+        .unwrap_or_default();
+    let tools = probe_tools(&config.storage, &paths);
+    status_report(config, cli_version(), tools)
+}
+
+pub fn status_report(
+    config: &Config,
+    cli_version: Option<String>,
+    tools: Vec<ToolStatus>,
+) -> StatusReport {
+    StatusReport {
+        storage: config.storage.to_uppercase(),
+        target: status_target(config),
+        compression: config.compression.to_uppercase(),
+        max_backups: config.max_backups,
+        schedule: config.schedule.clone(),
+        cli_version,
+        config_path: short_path(&config_path()),
+        log_path: short_path(&log_path()),
+        history_path: short_path(&history_path()),
+        tools,
+    }
+}
+
+pub fn shorten_path(path: &Path, home: &Path, prefix: &Path) -> String {
+    for (base, replacement) in [(prefix, "$PREFIX"), (home, "~")] {
+        if base.as_os_str().is_empty() {
+            continue;
+        }
+        if path == base {
+            return replacement.to_string();
+        }
+        if let Ok(rest) = path.strip_prefix(base) {
+            return format!("{replacement}/{}", rest.display());
+        }
+    }
+    path.display().to_string()
+}
+
+pub fn short_path(path: &Path) -> String {
+    let prefix = env::var_os("PREFIX")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    shorten_path(path, &home(), &prefix)
+}
+
 fn string_field(value: &Value, key: &str, default: &str) -> String {
     value
         .get(key)
@@ -447,6 +585,95 @@ mod tests {
         let debug = format!("{config:?}");
         assert!(!debug.contains("secret-token"));
         assert!(!debug.contains("secret-password"));
+    }
+
+    #[test]
+    fn config_parser_keeps_display_targets_and_no_secrets() {
+        let raw = serde_json::json!({
+            "storage": "github",
+            "github_repo": "me/backups",
+            "github_branch": "backup",
+            "gdrive_folder_id": "folder-id",
+            "github_token": "secret-token",
+            "encrypt_password": "secret-password"
+        });
+        let config = parse_config(&raw, &serde_json::json!({"enabled": false}));
+        assert_eq!(config.github_repo, "me/backups");
+        assert_eq!(config.github_branch, "backup");
+        assert_eq!(config.gdrive_folder_id, "folder-id");
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("secret-token"));
+        assert!(!debug.contains("secret-password"));
+    }
+
+    #[test]
+    fn status_target_names_each_backend() {
+        let mut config = Config::default();
+        config.storage = "local".into();
+        config.local_path = "~/termux-backups".into();
+        assert_eq!(status_target(&config), "~/termux-backups");
+
+        config.storage = "gdrive".into();
+        config.gdrive_folder_id.clear();
+        assert_eq!(status_target(&config), "(root)");
+        config.gdrive_folder_id = "folder-id".into();
+        assert_eq!(status_target(&config), "folder-id");
+
+        config.storage = "github".into();
+        config.github_repo = "me/backups".into();
+        config.github_branch = "backup".into();
+        assert_eq!(status_target(&config), "me/backups @ backup");
+    }
+
+    #[test]
+    fn probe_tools_requires_rclone_only_for_gdrive() {
+        let local = probe_tools("local", &[]);
+        assert!(local.iter().all(|tool| tool.path.is_none()));
+        assert!(
+            !local
+                .iter()
+                .find(|tool| tool.name == "rclone")
+                .unwrap()
+                .required
+        );
+
+        let drive = probe_tools("gdrive", &[]);
+        assert!(
+            drive
+                .iter()
+                .find(|tool| tool.name == "rclone")
+                .unwrap()
+                .required
+        );
+    }
+
+    #[test]
+    fn which_in_finds_a_file_in_path_order() {
+        let scratch = |name: &str| {
+            let dir = std::env::temp_dir().join(format!("ts-tui-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        };
+        let first = scratch("first");
+        let second = scratch("second");
+        std::fs::write(second.join("git"), "").unwrap();
+        let paths = vec![first, second.clone()];
+        assert_eq!(which_in("git", &paths), Some(second.join("git")));
+    }
+
+    #[test]
+    fn shorten_path_replaces_home_and_prefix() {
+        let home = Path::new("/data/data/com.termux/files/home");
+        let prefix = Path::new("/data/data/com.termux/files/usr");
+        assert_eq!(
+            shorten_path(&home.join(".config/termux-sync"), home, prefix),
+            "~/.config/termux-sync"
+        );
+        assert_eq!(
+            shorten_path(&prefix.join("bin/tar"), home, prefix),
+            "$PREFIX/bin/tar"
+        );
     }
 
     #[test]
