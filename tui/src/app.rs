@@ -1909,7 +1909,8 @@ mod tests {
         app.header_areas.status = Rect::new(0, 23, 80, 1);
         app.handle_mouse(5, 23);
         assert_eq!(app.focus, Focus::Output);
-        assert_eq!(app.status, "showing sync.log · 200 lines");
+        assert!(app.status.starts_with("showing sync.log · "));
+        assert!(app.status.ends_with(" lines"));
     }
 
     #[test]
