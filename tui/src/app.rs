@@ -55,12 +55,67 @@ pub enum Action {
     List,
     Logs,
     DiskCheck,
+    ExportConfig,
+    ImportConfig,
     Setup,
     Schedule,
     ClearCache,
     Refresh,
     Help,
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputPrompt {
+    BackupLabel,
+    ExportConfig,
+    ImportConfig,
+    CheckTarget,
+}
+
+impl InputPrompt {
+    pub fn title(self) -> &'static str {
+        match self {
+            InputPrompt::BackupLabel => "Backup label",
+            InputPrompt::ExportConfig => "Export config",
+            InputPrompt::ImportConfig => "Import config",
+            InputPrompt::CheckTarget => "Disk check target",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            InputPrompt::BackupLabel => "Used in the manifest and backup name.",
+            InputPrompt::ExportConfig => "Tokens and passwords are redacted by the CLI.",
+            InputPrompt::ImportConfig => "Path to a previously exported config file.",
+            InputPrompt::CheckTarget => "Blank checks all paths. You can type a path or ~.",
+        }
+    }
+
+    pub fn seed(self) -> &'static str {
+        match self {
+            InputPrompt::BackupLabel => "",
+            InputPrompt::ExportConfig => "~/termux-sync-config-export.json",
+            InputPrompt::ImportConfig => "",
+            InputPrompt::CheckTarget => "",
+        }
+    }
+
+    pub fn max_len(self) -> usize {
+        match self {
+            InputPrompt::BackupLabel => 64,
+            InputPrompt::ExportConfig | InputPrompt::ImportConfig | InputPrompt::CheckTarget => 256,
+        }
+    }
+
+    pub fn cancel_status(self) -> &'static str {
+        match self {
+            InputPrompt::BackupLabel => "backup cancelled",
+            InputPrompt::ExportConfig => "export cancelled",
+            InputPrompt::ImportConfig => "import cancelled",
+            InputPrompt::CheckTarget => "disk check cancelled",
+        }
+    }
 }
 
 pub struct ActionItem {
@@ -104,8 +159,20 @@ pub const ACTIONS: &[ActionItem] = &[
     ActionItem {
         glyph: "◔",
         ascii: "%",
-        label: "Disk check (~)",
+        label: "Disk check",
         action: Action::DiskCheck,
+    },
+    ActionItem {
+        glyph: "⇧",
+        ascii: ">",
+        label: "Export config",
+        action: Action::ExportConfig,
+    },
+    ActionItem {
+        glyph: "⇩",
+        ascii: "<",
+        label: "Import config",
+        action: Action::ImportConfig,
     },
     ActionItem {
         glyph: "⚙",
@@ -258,13 +325,13 @@ pub struct App {
     pub op_result_handled: bool,
     pub pending_select: Option<String>,
     pub pending_confirm: Option<Action>,
-    pub pending_label: Option<String>,
+    pub pending_input: Option<InputPrompt>,
     pub pending_handoff: Option<HandoffInfo>,
     pub handoff_yes: Rect,
     pub handoff_no: Rect,
-    pub label_text: String,
-    pub label_yes: Rect,
-    pub label_no: Rect,
+    pub input_text: String,
+    pub input_yes: Rect,
+    pub input_no: Rect,
     pub confirm_yes: Rect,
     pub confirm_no: Rect,
     pub header_areas: HeaderAreas,
@@ -327,13 +394,13 @@ impl App {
             op_result_handled: false,
             pending_select: None,
             pending_confirm: None,
-            pending_label: None,
+            pending_input: None,
             pending_handoff: None,
             handoff_yes: Rect::default(),
             handoff_no: Rect::default(),
-            label_text: String::new(),
-            label_yes: Rect::default(),
-            label_no: Rect::default(),
+            input_text: String::new(),
+            input_yes: Rect::default(),
+            input_no: Rect::default(),
             confirm_yes: Rect::default(),
             confirm_no: Rect::default(),
             header_areas: HeaderAreas::default(),
@@ -456,7 +523,8 @@ impl App {
             }
             self.pending = None;
             self.pending_confirm = None;
-            self.pending_label = None;
+            self.pending_input = None;
+            self.input_text.clear();
             self.pending_handoff = None;
             self.show_history = false;
             self.should_quit = true;
@@ -495,8 +563,8 @@ impl App {
             }
             return;
         }
-        if self.pending_label.is_some() {
-            self.handle_label_key(code, modifiers);
+        if self.pending_input.is_some() {
+            self.handle_input_key(code, modifiers);
             return;
         }
         if self.backup_filtering {
@@ -577,39 +645,54 @@ impl App {
         self.focus = focus;
     }
 
-    fn handle_label_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+    fn handle_input_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         if modifiers.contains(KeyModifiers::CONTROL)
             && matches!(code, KeyCode::Char('c') | KeyCode::Char('C'))
         {
-            self.pending_label = None;
-            self.label_text.clear();
+            self.pending_input = None;
+            self.input_text.clear();
             self.should_quit = true;
             return;
         }
+        let Some(prompt) = self.pending_input else {
+            return;
+        };
         match code {
-            KeyCode::Enter => {
-                let label = self.label_text.trim().to_string();
-                self.pending_label = None;
-                self.label_text.clear();
-                self.start_operation(Kind::Backup, "backup", backup_command(&label));
-            }
+            KeyCode::Enter => self.submit_input(prompt),
             KeyCode::Esc => {
-                self.pending_label = None;
-                self.label_text.clear();
-                self.status = "backup cancelled".to_string();
+                self.pending_input = None;
+                self.input_text.clear();
+                self.status = prompt.cancel_status().to_string();
             }
             KeyCode::Backspace => {
-                self.label_text.pop();
+                self.input_text.pop();
             }
             KeyCode::Char(ch)
                 if !ch.is_control()
                     && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                    && self.label_text.len() < 64 =>
+                    && self.input_text.len() < prompt.max_len() =>
             {
-                self.label_text.push(ch);
+                self.input_text.push(ch);
             }
             _ => {}
         }
+    }
+
+    fn submit_input(&mut self, prompt: InputPrompt) {
+        if prompt == InputPrompt::BackupLabel {
+            let label = self.input_text.trim().to_string();
+            self.pending_input = None;
+            self.input_text.clear();
+            self.start_operation(Kind::Backup, "backup", backup_command(&label));
+            return;
+        }
+        let Some(args) = input_command(prompt, &self.input_text) else {
+            self.status = "enter a path".to_string();
+            return;
+        };
+        self.pending_input = None;
+        self.input_text.clear();
+        self.start_task(Task::Command(args));
     }
 
     fn handle_operation_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
@@ -945,7 +1028,7 @@ impl App {
 
     pub fn handle_scroll(&mut self, column: u16, row: u16, up: bool) {
         if self.pending_confirm.is_some()
-            || self.pending_label.is_some()
+            || self.pending_input.is_some()
             || self.pending_handoff.is_some()
             || self.show_history
         {
@@ -1004,16 +1087,16 @@ impl App {
             }
             return;
         }
-        if self.pending_label.is_some() {
-            if self.label_yes.contains(point) {
-                let label = self.label_text.trim().to_string();
-                self.pending_label = None;
-                self.label_text.clear();
-                self.start_operation(Kind::Backup, "backup", backup_command(&label));
-            } else if self.label_no.contains(point) {
-                self.pending_label = None;
-                self.label_text.clear();
-                self.status = "backup cancelled".to_string();
+        if self.pending_input.is_some() {
+            let Some(prompt) = self.pending_input else {
+                return;
+            };
+            if self.input_yes.contains(point) {
+                self.submit_input(prompt);
+            } else if self.input_no.contains(point) {
+                self.pending_input = None;
+                self.input_text.clear();
+                self.status = prompt.cancel_status().to_string();
             }
             return;
         }
@@ -1192,8 +1275,8 @@ impl App {
     pub fn run(&mut self, action: Action) {
         match action {
             Action::Backup => {
-                self.pending_label = Some("backup".to_string());
-                self.label_text.clear();
+                self.pending_input = Some(InputPrompt::BackupLabel);
+                self.input_text = InputPrompt::BackupLabel.seed().to_string();
                 self.status = "label this backup, or press Enter to continue".to_string();
             }
             Action::Restore => {
@@ -1227,7 +1310,19 @@ impl App {
                 self.status = "showing sync.log".to_string();
             }
             Action::DiskCheck => {
-                self.start_task(Task::Command(vec!["check".to_string(), "~".to_string()]))
+                self.pending_input = Some(InputPrompt::CheckTarget);
+                self.input_text = InputPrompt::CheckTarget.seed().to_string();
+                self.status = "blank checks all paths".to_string();
+            }
+            Action::ExportConfig => {
+                self.pending_input = Some(InputPrompt::ExportConfig);
+                self.input_text = InputPrompt::ExportConfig.seed().to_string();
+                self.status = "choose where to save the exported config".to_string();
+            }
+            Action::ImportConfig => {
+                self.pending_input = Some(InputPrompt::ImportConfig);
+                self.input_text = InputPrompt::ImportConfig.seed().to_string();
+                self.status = "enter the path to a config export".to_string();
             }
             Action::Setup => {
                 self.pending_handoff = Some(HandoffInfo {
@@ -1350,7 +1445,10 @@ impl App {
                 self.output_offset = 0;
                 self.switch_focus(Focus::Output);
                 self.status = format!("termux-sync {title} finished");
-                if title.starts_with("delete") || title.starts_with("clear-cache") {
+                if title.starts_with("delete")
+                    || title.starts_with("clear-cache")
+                    || title.starts_with("import-config")
+                {
                     self.refresh();
                 }
             }
@@ -1447,6 +1545,33 @@ pub fn restore_command(name: &str) -> Vec<String> {
         "--name".to_string(),
         name.to_string(),
     ]
+}
+
+pub fn export_config_command(path: &str) -> Vec<String> {
+    vec!["export-config".to_string(), path.to_string()]
+}
+
+pub fn import_config_command(path: &str) -> Vec<String> {
+    vec!["import-config".to_string(), path.to_string()]
+}
+
+pub fn check_command(target: &str) -> Vec<String> {
+    let target = target.trim();
+    if target.is_empty() {
+        vec!["check".to_string()]
+    } else {
+        vec!["check".to_string(), target.to_string()]
+    }
+}
+
+pub fn input_command(prompt: InputPrompt, text: &str) -> Option<Vec<String>> {
+    let value = text.trim();
+    match prompt {
+        InputPrompt::BackupLabel => None,
+        InputPrompt::ExportConfig => (!value.is_empty()).then(|| export_config_command(value)),
+        InputPrompt::ImportConfig => (!value.is_empty()).then(|| import_config_command(value)),
+        InputPrompt::CheckTarget => Some(check_command(value)),
+    }
 }
 
 fn progress(tick: u64, start: u64, ticks: u64) -> f32 {
@@ -1740,8 +1865,55 @@ mod tests {
     fn backup_action_opens_label_prompt() {
         let mut app = App::with_snapshot(snapshot());
         app.run(Action::Backup);
-        assert!(app.pending_label.is_some());
+        assert_eq!(app.pending_input, Some(InputPrompt::BackupLabel));
         assert!(app.operation.is_none());
+    }
+
+    #[test]
+    fn path_command_builders_keep_paths_as_single_arguments() {
+        assert_eq!(
+            export_config_command("/tmp/my config.json"),
+            vec!["export-config", "/tmp/my config.json"]
+        );
+        assert_eq!(
+            import_config_command("~/export.json"),
+            vec!["import-config", "~/export.json"]
+        );
+        assert_eq!(check_command(""), vec!["check"]);
+        assert_eq!(check_command("$PREFIX"), vec!["check", "$PREFIX"]);
+    }
+
+    #[test]
+    fn blank_paths_are_rejected_but_blank_check_target_is_not() {
+        assert_eq!(input_command(InputPrompt::ExportConfig, "  "), None);
+        assert_eq!(input_command(InputPrompt::ImportConfig, ""), None);
+        assert_eq!(
+            input_command(InputPrompt::CheckTarget, " "),
+            Some(vec!["check".to_string()])
+        );
+    }
+
+    #[test]
+    fn export_action_opens_prefilled_prompt() {
+        let mut app = App::with_snapshot(snapshot());
+        app.run(Action::ExportConfig);
+        assert_eq!(app.pending_input, Some(InputPrompt::ExportConfig));
+        assert_eq!(app.input_text, "~/termux-sync-config-export.json");
+        app.handle_key(KeyCode::Esc);
+        assert!(app.pending_input.is_none());
+    }
+
+    #[test]
+    fn import_and_check_actions_open_empty_prompts() {
+        let mut app = App::with_snapshot(snapshot());
+        app.run(Action::ImportConfig);
+        assert_eq!(app.pending_input, Some(InputPrompt::ImportConfig));
+        assert!(app.input_text.is_empty());
+        app.handle_key(KeyCode::Esc);
+
+        app.run(Action::DiskCheck);
+        assert_eq!(app.pending_input, Some(InputPrompt::CheckTarget));
+        assert!(app.input_text.is_empty());
     }
 
     #[test]
@@ -1760,7 +1932,12 @@ mod tests {
     fn clicking_an_action_runs_it() {
         let mut app = App::with_snapshot(snapshot());
         app.actions_area = Rect::new(0, 0, 26, 20);
-        app.handle_mouse(2, 11);
+        let help_row = ACTIONS
+            .iter()
+            .position(|item| item.action == Action::Help)
+            .unwrap() as u16
+            + 1;
+        app.handle_mouse(2, help_row);
         assert!(app.show_help);
     }
 

@@ -511,9 +511,7 @@ pub fn shorten_path(path: &Path, home: &Path, prefix: &Path) -> String {
 }
 
 pub fn short_path(path: &Path) -> String {
-    let prefix = env::var_os("PREFIX")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let prefix = env::var_os("PREFIX").map(PathBuf::from).unwrap_or_default();
     shorten_path(path, &home(), &prefix)
 }
 
@@ -608,9 +606,11 @@ mod tests {
 
     #[test]
     fn status_target_names_each_backend() {
-        let mut config = Config::default();
-        config.storage = "local".into();
-        config.local_path = "~/termux-backups".into();
+        let mut config = Config {
+            storage: "local".into(),
+            local_path: "~/termux-backups".into(),
+            ..Config::default()
+        };
         assert_eq!(status_target(&config), "~/termux-backups");
 
         config.storage = "gdrive".into();

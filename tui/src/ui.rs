@@ -107,8 +107,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         render_action_confirm(frame, area, app, action);
     }
 
-    if app.pending_label.is_some() {
-        render_backup_label(frame, area, app);
+    if app.pending_input.is_some() {
+        render_input_prompt(frame, area, app);
     }
 
     if app.pending_handoff.is_some() {
@@ -169,7 +169,10 @@ fn render_handoff(frame: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-fn render_backup_label(frame: &mut Frame, area: Rect, app: &mut App) {
+fn render_input_prompt(frame: &mut Frame, area: Rect, app: &mut App) {
+    let Some(prompt) = app.pending_input else {
+        return;
+    };
     let popup = centered(area, area.width.saturating_sub(6).clamp(32, 58), 7);
     let inner = Rect {
         x: popup.x + 1,
@@ -178,13 +181,13 @@ fn render_backup_label(frame: &mut Frame, area: Rect, app: &mut App) {
         height: popup.height.saturating_sub(2),
     };
     let half = inner.width / 2;
-    app.label_yes = Rect {
+    app.input_yes = Rect {
         x: inner.x,
         y: inner.y + inner.height.saturating_sub(1),
         width: half,
         height: 1,
     };
-    app.label_no = Rect {
+    app.input_no = Rect {
         x: inner.x + half,
         y: inner.y + inner.height.saturating_sub(1),
         width: inner.width.saturating_sub(half),
@@ -192,19 +195,16 @@ fn render_backup_label(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     let lines = vec![
-        Line::from(Span::styled("Label (optional)", fg(MUTED))),
+        Line::from(Span::styled("Input", fg(MUTED))),
         Line::from(vec![
-            Span::styled(app.label_text.clone(), fg(Color::Reset).bold()),
+            Span::styled(app.input_text.clone(), fg(Color::Reset).bold()),
             Span::styled("█", fg(ACCENT)),
         ]),
-        Line::from(Span::styled(
-            "Used in the manifest and backup name.",
-            fg(MUTED),
-        )),
+        Line::from(Span::styled(prompt.hint(), fg(MUTED))),
         Line::from(""),
         Line::from(vec![
             Span::styled(" Enter ", fg(SUCCESS).bold()),
-            Span::styled("start", fg(MUTED)),
+            Span::styled("continue", fg(MUTED)),
             Span::raw("    "),
             Span::styled(" Esc ", fg(ACCENT).bold()),
             Span::styled("cancel", fg(MUTED)),
@@ -212,7 +212,9 @@ fn render_backup_label(frame: &mut Frame, area: Rect, app: &mut App) {
     ];
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(Text::from(lines)).block(op_block("Backup label", ACCENT)),
+        Paragraph::new(Text::from(lines))
+            .block(op_block(prompt.title(), ACCENT))
+            .wrap(Wrap { trim: true }),
         popup,
     );
 }
@@ -2085,7 +2087,7 @@ mod tests {
         app.run(crate::app::Action::Backup);
         let frame = render_app(&mut app, 100, 30);
         assert!(frame.contains("Backup label"));
-        assert!(frame.contains("Label (optional)"));
+        assert!(frame.contains("Used in the manifest and backup name."));
         assert!(frame.contains("Enter"));
     }
 
