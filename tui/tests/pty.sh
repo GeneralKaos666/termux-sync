@@ -55,6 +55,11 @@ run_case old-list old-cli "$feed_old"
 plain "$TMP/old-list.out" | tr -d '\n' | grep -Eq "old.*list.*output"
 printf 'old-list: assertions passed\n'
 
+feed_status='sleep 1; printf "s"; sleep 0.5; printf "\033"; sleep 0.3; printf "q"'
+run_case status status "$feed_status"
+plain "$TMP/status.out" | tr -d '\n' | grep -q "STATUS"
+printf 'status: assertions passed\n'
+
 feed_protected='sleep 1; printf "\t"; sleep 0.2; printf "\r"; sleep 1.0; printf "RESTORE"; sleep 0.2; printf "\r"; sleep 1.2; printf "\033"; sleep 2.5; printf "\033"; sleep 0.3; printf "q"'
 run_case restore-protected restore-protected "$feed_protected"
 plain "$TMP/restore-protected.out" | tr -d '\n' | grep -q "CANNOT"

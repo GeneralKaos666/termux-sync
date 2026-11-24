@@ -16,8 +16,8 @@ At start of an operation the TUI probes the installed `termux-sync`:
 
 - missing `--json-events`: backup and restore refuse before starting; `L`
   falls back to captured text output.
-- missing `--yes`: delete and clear-cache fall back to the terminal handoff and
-  the CLI asks its own confirmation.
+- missing `--yes`: delete, clear-logs and clear-cache fall back to the
+  terminal handoff and the CLI asks its own confirmation.
 
 Update `termux-sync` before using the cockpit if backup or restore refuses.
 
@@ -64,6 +64,34 @@ Closing the terminal externally is outside the guarantee.
   Treat as unverified, not as failed.
 
 Restore refuses to extract when any archive checksum fails.
+
+## Clear logs
+
+- `Clear logs` asks once in the TUI, then runs
+  `termux-sync clear-logs --yes` captured.
+- An older CLI without `--yes` hands the terminal to `termux-sync clear-logs`
+  and the CLI asks its own question.
+- With no log file, the CLI reports that there is nothing to clear. The TUI
+  does not create an empty log file.
+
+## Status
+
+- `s` opens the read-only status view.
+- It shows the storage target, compression and backup limit, schedule, TUI and
+  CLI versions, config/log/history paths, and `python3`, `dpkg`, `tar`,
+  `rclone`, `git`, `curl` checks.
+- `CLI not found` means `TERMUX_SYNC_BIN` or `termux-sync` could not be run.
+- `rclone` is required only for Google Drive.
+
+## Daemon
+
+- The daemon view shows schedule state, boot script presence, and recent
+  daemon lines from `sync.log`.
+- An enabled schedule is not proof that a daemon is running. Check manually:
+  `pgrep -f "termux-sync daemon"`.
+- Start it with `termux-sync daemon &`, or install Termux:Boot and keep
+  `~/.termux/boot/termux-sync-daemon.sh`.
+- The TUI never starts or stops the daemon.
 
 ## Layout recovery
 

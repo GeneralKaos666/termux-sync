@@ -16,7 +16,18 @@ the Python event protocol; setup and schedule hand the terminal to
 - Stat cards: backups saved, total stored size, latest package count and
   schedule. Cards appear at 80+ columns and 20+ rows.
 - Actions pane: icon for every action, plus backup, restore, delete, list,
-  logs, disk check, setup, schedule, clear cache, refresh, help, quit.
+  logs, clear logs, disk check, status, export config, import config, daemon,
+  setup, schedule, refresh, help, quit.
+- Status: `s` or the Status action shows storage target, compression and
+  backup limit, schedule, TUI and CLI versions, config/log/history paths, and
+  required tool checks. Tokens and passwords are never read.
+- Daemon: shows schedule state, boot script presence, recent daemon log lines,
+  and the manual start command. It does not start or stop the daemon.
+- Config: export and import prompts take a path and run the CLI. Export
+  redaction and import validation stay in Python.
+- Disk check: blank uses the CLI default overview; a path checks that target.
+- Clear logs: confirms in the TUI, then runs `termux-sync clear-logs --yes`.
+  An older CLI falls back to the terminal confirmation.
 - Backups pane: short backup name, age, size, relative usage bar and package
   count, with the selected backup's label, version and compression in the
   pane title. `/` filters by name, label or date.
@@ -91,9 +102,11 @@ Use ASCII icons with `--ascii` or `TERMUX_SYNC_TUI_ASCII=1`.
 | `Tab` / `Shift-Tab` | switch pane |
 | `R` | refresh backups and status |
 | `L` | list backups, including remote storage |
+| `s` | status |
 | `/` | filter backups in the Backups pane |
 | `h` | operation history |
 | `g` / `G` | top / bottom of output |
+| `[` / `]` | fewer / more log lines (40–2000) |
 | any printable | type a backup label when prompted |
 | `?` | help |
 | `↑` / `↓` in help | scroll help at small sizes |
@@ -129,12 +142,16 @@ selection; hold Shift to select text in most terminals.
 ## Safety notes
 
 - The config parser keeps only display fields. Tokens and passwords in
-  `config.json` are never read into the TUI state.
-- Status, backup list and logs are read-only.
-- Backup, restore, delete and clear-cache run the real `termux-sync` command.
-  Delete and clear-cache confirm inside the TUI, then run captured with
-  `--yes`; restore uses the event protocol. Setup and schedule use the
-  explicit handoff card.
+  `config.json` are never read into the TUI state. Status shows repo and
+  branch, never the token.
+- Status, daemon, backup list and logs are read-only. The daemon view never
+  starts or stops the process.
+- Backup, restore, delete, clear-logs and clear-cache run the real
+  `termux-sync` command. Delete, clear-logs and clear-cache confirm inside the
+  TUI, then run captured with `--yes`; restore uses the event protocol.
+- Export config, import config and disk check run the CLI captured. Export
+  paths are passed as one argument, never through a shell.
+- Setup and schedule use the explicit handoff card.
 
 ## Runbook
 
@@ -145,6 +162,6 @@ states, and old CLI installs: [RUNBOOK.md](RUNBOOK.md).
 
 - Restore cannot be cancelled after extraction starts.
 - Setup and schedule still hand over the terminal after a confirmation card.
-- Delete and clear-cache run captured after an in-TUI confirmation using
-  `termux-sync --yes`; older CLI falls back to the terminal prompt.
+- Delete, clear-logs and clear-cache run captured after an in-TUI confirmation
+  using `termux-sync --yes`; older CLI falls back to the terminal prompt.
 - The operations protocol is version 1 and backup/restore only.

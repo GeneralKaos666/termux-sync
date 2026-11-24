@@ -185,6 +185,7 @@ Keys:
   Tab        switch pane
   R          refresh backups and status
   L          list backups, including remote
+  s          status
   /          filter backups
   h          operation history
   [ / ]      fewer / more log lines

@@ -1790,6 +1790,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         ("Tab", "switch pane"),
         ("R", "refresh backups and status"),
         ("L", "list backups, including remote"),
+        ("s", "status"),
         ("/", "filter backups"),
         ("h", "operation history"),
         ("g / G", "top / bottom of output"),
@@ -1807,11 +1808,15 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("Actions", fg(ACCENT).bold())));
     lines.push(Line::from(Span::styled(
-        "  Backup, restore, delete, list, logs, disk check,",
+        "  Backup, restore, delete, list, logs, clear logs, status,",
         fg(MUTED),
     )));
     lines.push(Line::from(Span::styled(
-        "  setup, schedule, clear cache.",
+        "  disk check, Export/import config, daemon, setup,",
+        fg(MUTED),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  schedule, clear cache.",
         fg(MUTED),
     )));
     lines.push(Line::from(""));
@@ -2255,6 +2260,20 @@ mod tests {
         assert!(frame.contains("Backup label"));
         assert!(frame.contains("Used in the manifest and backup name."));
         assert!(frame.contains("Enter"));
+    }
+
+    #[test]
+    fn help_lists_parity_actions() {
+        let mut app = app();
+        app.open_help();
+        for _ in 0..6 {
+            app.on_tick();
+        }
+        app.help_scroll = usize::MAX;
+        let frame = render_app(&mut app, 100, 30);
+        assert!(frame.contains("Clear logs"));
+        assert!(frame.contains("Export/import config"));
+        assert!(frame.contains("Daemon"));
     }
 
     #[test]

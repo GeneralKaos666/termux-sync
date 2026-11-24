@@ -726,6 +726,7 @@ impl App {
             KeyCode::BackTab => self.switch_focus(self.focus.previous()),
             KeyCode::Char('R') => self.refresh(),
             KeyCode::Char('L') => self.run(Action::List),
+            KeyCode::Char('s') => self.run(Action::Status),
             KeyCode::Char('h') => {
                 self.show_history = true;
                 self.history_selected = 0;
