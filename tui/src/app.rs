@@ -15,6 +15,12 @@ pub enum Screen {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputSource {
+    Log,
+    Command,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Actions,
     Backups,
@@ -326,6 +332,8 @@ pub struct App {
     pub focus: Focus,
     pub output: Vec<String>,
     pub output_offset: usize,
+    pub output_source: OutputSource,
+    pub log_lines: usize,
     pub status: String,
     pub show_help: bool,
     pub show_status: bool,
@@ -402,6 +410,8 @@ impl App {
             focus: Focus::Actions,
             output,
             output_offset: 0,
+            output_source: OutputSource::Log,
+            log_lines: 200,
             status,
             show_help: false,
             show_status: false,
@@ -1334,10 +1344,21 @@ impl App {
             }
             KeyCode::PageUp => self.output_offset += 10,
             KeyCode::PageDown => self.output_offset = self.output_offset.saturating_sub(10),
+            KeyCode::Char('[') => self.adjust_log_lines(-200),
+            KeyCode::Char(']') => self.adjust_log_lines(200),
             KeyCode::Char('g') | KeyCode::Home => self.output_offset = usize::MAX / 2,
             KeyCode::Char('G') | KeyCode::End => self.output_offset = 0,
             _ => {}
         }
+    }
+
+    fn adjust_log_lines(&mut self, delta: isize) {
+        self.log_lines = stepped_log_lines(self.log_lines, delta);
+        if self.output_source == OutputSource::Log {
+            self.output = data::tail_log(self.log_lines);
+            self.output_offset = 0;
+        }
+        self.status = format!("log {} lines", self.log_lines);
     }
 
     fn move_action(&mut self, delta: isize) {
@@ -1399,10 +1420,11 @@ impl App {
                 }
             }
             Action::Logs => {
-                self.output = data::tail_log(200);
+                self.output_source = OutputSource::Log;
+                self.output = data::tail_log(self.log_lines);
                 self.output_offset = 0;
                 self.switch_focus(Focus::Output);
-                self.status = "showing sync.log".to_string();
+                self.status = format!("showing sync.log · {} lines", self.log_lines);
             }
             Action::ClearLogs => self.pending_confirm = Some(Action::ClearLogs),
             Action::Status => self.open_status(),
@@ -1550,6 +1572,7 @@ impl App {
             Ok(WorkerMsg::Refreshed(snapshot)) => self.apply_snapshot(snapshot),
             Ok(WorkerMsg::Backups(backups)) => self.apply_backup_list(backups),
             Ok(WorkerMsg::Output { title, text }) => {
+                self.output_source = OutputSource::Command;
                 self.output.clear();
                 self.output.push(format!("$ termux-sync {title}"));
                 self.output.extend(text.lines().map(str::to_string));
@@ -1565,6 +1588,7 @@ impl App {
                 }
             }
             Err(err) => {
+                self.output_source = OutputSource::Command;
                 self.output.clear();
                 self.output.extend(err.lines().map(str::to_string));
                 self.output_offset = 0;
@@ -1600,6 +1624,7 @@ impl App {
             .unwrap_or_else(|| "refreshed".to_string());
         self.snapshot = snapshot;
         self.output = self.snapshot.log.clone();
+        self.output_source = OutputSource::Log;
         self.output_offset = 0;
 
         if self.snapshot.backups.is_empty() {
@@ -1684,6 +1709,11 @@ pub fn input_command(prompt: InputPrompt, text: &str) -> Option<Vec<String>> {
         InputPrompt::ImportConfig => (!value.is_empty()).then(|| import_config_command(value)),
         InputPrompt::CheckTarget => Some(check_command(value)),
     }
+}
+
+pub fn stepped_log_lines(current: usize, delta: isize) -> usize {
+    let next = (current as isize + delta).clamp(40, 2000);
+    next as usize
 }
 
 fn progress(tick: u64, start: u64, ticks: u64) -> f32 {
@@ -1823,7 +1853,7 @@ mod tests {
         app.header_areas.status = Rect::new(0, 23, 80, 1);
         app.handle_mouse(5, 23);
         assert_eq!(app.focus, Focus::Output);
-        assert_eq!(app.status, "showing sync.log");
+        assert_eq!(app.status, "showing sync.log · 200 lines");
     }
 
     #[test]
@@ -2076,6 +2106,23 @@ mod tests {
         assert!(app.show_status);
         app.handle_key(KeyCode::Esc);
         assert!(!app.show_status);
+    }
+
+    #[test]
+    fn log_line_count_clamps_and_steps() {
+        assert_eq!(stepped_log_lines(40, -200), 40);
+        assert_eq!(stepped_log_lines(200, 200), 400);
+        assert_eq!(stepped_log_lines(2000, 200), 2000);
+    }
+
+    #[test]
+    fn bracket_keys_change_the_log_line_count() {
+        let mut app = App::with_snapshot(snapshot());
+        app.focus = Focus::Output;
+        app.handle_key(KeyCode::Char(']'));
+        assert_eq!(app.log_lines, 400);
+        app.handle_key(KeyCode::Char('['));
+        assert_eq!(app.log_lines, 200);
     }
 
     #[test]

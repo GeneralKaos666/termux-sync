@@ -187,6 +187,7 @@ Keys:
   L          list backups, including remote
   /          filter backups
   h          operation history
+  [ / ]      fewer / more log lines
   ?          help
   q          quit
   Ctrl+C     quit dashboard; cancel a running backup; refused during protected restore

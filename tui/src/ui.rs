@@ -8,7 +8,7 @@ use ratatui::widgets::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{ACTIONS, Action, App, Focus, Screen};
+use crate::app::{ACTIONS, Action, App, Focus, OutputSource, Screen};
 use crate::data::{backup_age, human_size, parse_log_line};
 use crate::ops::{Kind, Operation, Plan, StageState, Status};
 
@@ -1381,7 +1381,11 @@ fn render_backups(frame: &mut Frame, area: Rect, app: &mut App) {
 
 fn render_output(frame: &mut Frame, area: Rect, app: &mut App) {
     app.output_area = area;
-    let block = pane_block("Output", None, app.focus == Focus::Output, MAGENTA);
+    let detail = match app.output_source {
+        OutputSource::Log => format!("log {}", app.log_lines),
+        OutputSource::Command => "command".to_string(),
+    };
+    let block = pane_block("Output", Some(&detail), app.focus == Focus::Output, MAGENTA);
     let inner = block.inner(area);
     let inner_height = inner.height as usize;
     let len = app.output.len();
@@ -1789,6 +1793,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         ("/", "filter backups"),
         ("h", "operation history"),
         ("g / G", "top / bottom of output"),
+        ("[ / ]", "fewer / more log lines"),
         ("?  / Esc", "close this help"),
         ("↑ / ↓", "scroll this help"),
         ("Ctrl+C", "quit immediately"),
@@ -2277,6 +2282,12 @@ mod tests {
         assert!(frame.contains("me/backups @ main"));
         assert!(frame.contains("rclone"));
         assert!(frame.contains("missing"));
+    }
+
+    #[test]
+    fn output_title_shows_the_log_line_count() {
+        let frame = render_at(100, 30);
+        assert!(frame.contains("log 200"));
     }
 
     #[test]
