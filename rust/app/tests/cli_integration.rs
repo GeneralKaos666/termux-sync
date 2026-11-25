@@ -267,6 +267,18 @@ fn parse_errors_and_version() {
 
     let backup = fx.run(&["--json-events", "backup", "--label", "delete"], None);
     let _ = fx.backup_result(&backup);
+    let tui_version = fx.run(&["tui", "--version"], None);
+    assert!(tui_version.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&tui_version.stdout).trim(),
+        "termux-sync tui 2.0.0"
+    );
+    let tui_help = fx.run(&["tui", "--help"], None);
+    assert!(tui_help.status.success());
+    assert!(String::from_utf8_lossy(&tui_help.stdout).contains("Usage: termux-sync tui"));
+    let tui_no_tty = fx.run(&["tui"], None);
+    assert_eq!(tui_no_tty.status.code(), Some(2));
+
     let missing_delete = fx.run(&["delete", "--name", "missing", "--yes"], None);
     assert!(missing_delete.status.success());
     let text = String::from_utf8_lossy(&missing_delete.stdout);

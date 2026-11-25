@@ -151,10 +151,6 @@ pub enum Event {
         name: String,
         storage: String,
     },
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "kept for JSON event parsing tests")
-    )]
     Backup(Backup),
     Stage {
         id: String,

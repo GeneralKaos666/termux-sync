@@ -335,6 +335,7 @@ pub fn print_help() {
                 ("check", "Show disk usage (~, $PREFIX, or a custom path)"),
                 ("clear-cache", "Remove temporary and cached files"),
                 ("help", "Show this help"),
+                ("tui", "Launch the operations TUI"),
             ],
         ),
     ];

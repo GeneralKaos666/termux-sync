@@ -428,15 +428,19 @@ Requirements:
 - Rust 1.100 or newer (`pkg install rust` on Termux)
 - A `termux-sync` 2.0 build
 
-Build and run:
+Run it from the CLI:
 
 ```bash
-cd tui
-cargo build --release
-./target/release/termux-sync-tui
+termux-sync tui
 ```
 
-Install it with `bash rust/install.sh` (installs both binaries).
+Or run the standalone alias:
+
+```bash
+termux-sync-tui
+```
+
+Install both with `bash rust/install.sh`.
 Use `--ascii` or `TERMUX_SYNC_TUI_ASCII=1` for terminals whose font renders
 the default icons badly.
 

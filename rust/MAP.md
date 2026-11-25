@@ -44,6 +44,7 @@ Sources of truth:
 | ADR-024 | TUI reads through core, mutations stay CLI | accepted |
 | ADR-025 | Version 2.0.0 and native install | accepted |
 | ADR-026 | Post-lift integration tests and installer cleanup | accepted |
+| ADR-027 | TUI library with a tui CLI command | accepted |
 
 ## Units
 
@@ -99,6 +100,8 @@ The unit gate runs once at the end.
   `rust/install.sh` and `rust/cutover.sh` added.
 - Post-lift: 5 CLI integration tests added; GitHub live smoke passed on a temporary
   private repo; root `install.sh` and `tsctl` now install the Rust binaries.
+- `termux-sync tui` launches the dashboard from the CLI; `termux-sync-tui` stays as
+  an alias (ADR-027).
 - Fallback rate: 0%. Cutover is the user's call.
 - Last replay report: `rust/app-cases/replay-report.md`.
 
