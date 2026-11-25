@@ -459,11 +459,16 @@ pub fn probe_tools(storage: &str, paths: &[PathBuf]) -> Vec<ToolStatus> {
 }
 
 pub fn cli_version() -> Option<String> {
-    let args = vec!["--version".to_string()];
-    let output = cli_command(&args).output().ok()?;
-    parse_cli_version(output.status.success(), &output.stdout)
+    Some(format!(
+        "termux-sync v{}",
+        termux_sync_core::core::paths::VERSION
+    ))
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "kept for CLI version parsing tests")
+)]
 pub fn parse_cli_version(success: bool, stdout: &[u8]) -> Option<String> {
     if !success {
         return None;

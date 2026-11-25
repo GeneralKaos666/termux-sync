@@ -9,6 +9,19 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-24
+
+### Changed
+- The CLI and TUI are now pure Rust. `termux-sync` is built from `rust/app`; the Python
+  implementation stays only as reference.
+- Archives are GNU tar (Python still reads them), with streaming GitHub parts unchanged.
+- CLI human text is normalized; JSON events, exit codes, configs, manifests and backup
+  layouts stay compatible.
+
+### Added
+- `rust/install.sh` builds and installs both binaries.
+- `rust/cutover.sh` walks through replacing the Python command and rolling back.
+
 ---
 
 ## [1.3.9] - 2026-11-21

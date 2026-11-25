@@ -4,7 +4,7 @@
 [![RepoGrade](https://www.repo-grade.com/api/badge/djunekz/termux-sync)](https://www.repo-grade.com/report/djunekz/termux-sync)
 [![PyPI version](https://img.shields.io/pypi/v/termux-sync?logo=pypi&logoColor=white&color=3775A9)](https://pypi.org/project/termux-sync/)
 [![PyPI downloads](https://img.shields.io/pepy/dt/termux-sync?logo=pypi&logoColor=white&label=downloads)](https://pepy.tech/project/termux-sync)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue?badge.svg)](https://www.python.org/)
+[![Rust 1.100+](https://img.shields.io/badge/rust-1.100%2B-orange?badge.svg)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?badge.svg)](LICENSE)
 [![Termux](https://img.shields.io/badge/Termux-compatible-brightgreen?badge.svg)](https://termux.dev)
 [![CI](https://github.com/djunekz/termux-sync/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/djunekz/termux-sync/actions/workflows/ci.yml)
@@ -68,8 +68,7 @@ termux-sync captures your installed packages, home directory, and configuration 
 ## Requirements
 
 ```
-Python 3.10+
-python-pip
+Rust 1.100+ (pkg install rust)
 tar (included in Termux)
 ```
 
@@ -83,38 +82,25 @@ Optional dependencies depending on which storage backend you use:
 
 ## Installation
 
-### Option 1 — PyPI
+The current app is pure Rust. Build and install both binaries from a clone:
 
 ```bash
-pip install rich
-pip install termux-sync
-```
-
-> After installation, run `termux-sync` from anywhere.
-
-### Option 2 — tsctl (recommended)
-
-`tsctl` is the control tool that handles installation, updates, and removal. It downloads the latest release from GitHub and sets up the `termux-sync` command system-wide.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/djunekz/termux-sync/main/tsctl -o tsctl
-chmod +x tsctl
-bash tsctl install
-```
-
-> After installation, run `termux-sync` from anywhere.
-
-### Option 3 — Manual (git clone)
-
-```bash
-pkg install python python-pip
+pkg install rust git
 git clone https://github.com/djunekz/termux-sync ~/termux-sync
 cd ~/termux-sync
-pip install rich
-bash install.sh
+bash rust/install.sh
 ```
 
-> After installation, run `termux-sync` from anywhere.
+This installs `termux-sync` and `termux-sync-tui` into `$PREFIX/bin`.
+
+To replace an existing Python installation interactively:
+
+```bash
+bash rust/cutover.sh
+```
+
+The old Python command is kept as `termux-sync-python` for rollback. The
+Python sources stay in the repository as reference until you remove them.
 
 ---
 
@@ -430,8 +416,7 @@ termux-sync/
 ## Optional Rust TUI
 
 The `tui/` directory contains an optional Ratatui dashboard and operations
-cockpit. It is not included in the PyPI wheel or sdist, and `pip install
-termux-sync` does not require Rust.
+cockpit. It shares the Rust core and is installed by `rust/install.sh`.
 
 It streams backup and restore through `termux-sync --json-events`, shows live
 stages and logs, verifies backups, lists remote backups, and gates restore
@@ -440,8 +425,8 @@ history, filters backups, prompts for labels and supports ASCII icons.
 
 Requirements:
 
-- Rust 1.85 or newer (`pkg install rust` on Termux)
-- A `termux-sync` build that supports `--json-events`
+- Rust 1.100 or newer (`pkg install rust` on Termux)
+- A `termux-sync` 2.0 build
 
 Build and run:
 
@@ -451,7 +436,7 @@ cargo build --release
 ./target/release/termux-sync-tui
 ```
 
-Install it beside the Python command with `cd tui && ./install.sh`.
+Install it with `bash rust/install.sh` (installs both binaries).
 Use `--ascii` or `TERMUX_SYNC_TUI_ASCII=1` for terminals whose font renders
 the default icons badly.
 
@@ -460,8 +445,7 @@ refuse with a clear message; `L` falls back to captured text output. See [tui/RE
 for keys, cancellation rules, and layout behavior. Recovery steps live in
 [tui/RUNBOOK.md](tui/RUNBOOK.md).
 
-The TUI has its own workflow in `.github/workflows/tui.yml`; Python CI is
-unchanged. The workflow also cross-checks Android targets with the NDK; prebuilt
+The TUI has its own workflow in `.github/workflows/tui.yml`. The workflow also cross-checks Android targets with the NDK; prebuilt
 release binaries are a later distribution task.
 
 ---

@@ -151,6 +151,10 @@ pub enum Event {
         name: String,
         storage: String,
     },
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "kept for JSON event parsing tests")
+    )]
     Backup(Backup),
     Stage {
         id: String,
@@ -374,32 +378,14 @@ enum Msg {
 }
 
 pub fn collect_backups() -> Result<Vec<Backup>, String> {
-    let mut command = data::cli_command(&["list".to_string(), "--json-events".to_string()]);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let output = command
-        .output()
-        .map_err(|error| format!("cannot run termux-sync list: {error}"))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-
-    let mut backups = Vec::new();
-    let mut saw_result = false;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        match parse_event(line) {
-            Ok(Event::Backup(backup)) => backups.push(backup),
-            Ok(Event::Result(_)) => saw_result = true,
-            Ok(_) => {}
-            Err(error) => return Err(format!("invalid list event: {error}")),
-        }
-    }
-    if !saw_result {
-        return Err("list event stream ended without a result".to_string());
-    }
-    Ok(backups)
+    let text = std::fs::read_to_string(data::config_path()).unwrap_or_else(|_| "{}".to_string());
+    let cfg: Value = serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}));
+    let storage = termux_sync_core::core::storage::Storage::from_config(&cfg)?;
+    Ok(storage
+        .list_backups()
+        .into_iter()
+        .filter_map(|value| data::parse_manifest(&value))
+        .collect())
 }
 
 pub fn supports_flag(flag: &str) -> bool {
