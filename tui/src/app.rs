@@ -383,6 +383,12 @@ pub struct App {
     pub output_area: Rect,
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         let mut app = Self::with_snapshot(Snapshot::default());

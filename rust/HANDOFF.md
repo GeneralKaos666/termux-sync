@@ -21,6 +21,7 @@
 - Post-lift hardening: `rust/app/tests/cli_integration.rs` covers the excluded CLI paths;
   `rust/smoke-github.sh` passed a live backup/list/restore/delete smoke; root `install.sh`
   and `tsctl` now install the Rust binaries.
+- `termux-sync tui` launches the dashboard; `termux-sync-tui` remains an alias.
 - Fallback rate: 0%. Cutover is the user's call; the Python source is still reference.
 - `rust/fixtures/unit-home/.config/termux-sync/config.json` is intentionally invalid:
   one recorded `load_config` failure case depends on it. Do not "fix" it.

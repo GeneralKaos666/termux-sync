@@ -465,10 +465,6 @@ pub fn cli_version() -> Option<String> {
     ))
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "kept for CLI version parsing tests")
-)]
 pub fn parse_cli_version(success: bool, stdout: &[u8]) -> Option<String> {
     if !success {
         return None;

@@ -372,3 +372,18 @@ root `install.sh` delegate to `rust/install.sh` and rewrite `tsctl` for the Rust
 Consequences: The excluded app cases are backed by binary-level integration tests. GitHub
 has a repeatable live smoke; it was run on a temporary private repository and the
 repository was deleted. `tsctl` no longer downloads or installs Python.
+
+## ADR-027: The TUI is a library with a `tui` CLI command
+
+Status: accepted (2026-11-25)
+
+Context: The TUI shipped only as `termux-sync-tui`. Users want one command,
+`termux-sync tui`, and the dashboard still needs its standalone entry for scripts.
+
+Decision: Move TUI startup into `termux-sync-tui`'s library (`main_entry`), add `tui` to
+the CLI, and keep `termux-sync-tui` as a thin wrapper over the same library. Arguments
+after `tui` pass through (`--ascii`, `--no-anim`, `--help`, `--version`).
+
+Consequences: The CLI binary grows by the TUI dependency. Both entry points share one
+implementation. Help text and integration tests cover `tui --version`, `tui --help` and
+the non-TTY refusal.

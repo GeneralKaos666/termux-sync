@@ -59,17 +59,18 @@ the Python event protocol; setup and schedule hand the terminal to
 
 ## Build and run
 
+From the repository root:
+
 ```bash
-cd tui
-cargo build --release
-./target/release/termux-sync-tui
+bash rust/install.sh
+termux-sync tui
 ```
 
-Install it beside the Python command with:
+The standalone `termux-sync-tui` binary is kept as an alias for the same
+library. In a development checkout:
 
 ```bash
-cd tui
-./install.sh
+cargo run --manifest-path rust/app/Cargo.toml -- tui
 ```
 
 `install.sh` accepts `--prefix PATH` and `--skip-build`. It copies the release

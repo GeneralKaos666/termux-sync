@@ -44,6 +44,7 @@ const COMMANDS: &[&str] = &[
     "clear-logs",
     "check",
     "clear-cache",
+    "tui",
     "help",
 ];
 
@@ -109,6 +110,16 @@ fn report_error(error: &str) -> ExitCode {
 }
 
 pub fn run_from_argv() -> ExitCode {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().map(String::as_str) == Some("tui") {
+        return match termux_sync_tui::main_entry("termux-sync tui", &raw[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("termux-sync tui: {error}");
+                ExitCode::from(1)
+            }
+        };
+    }
     let mut opts = Options::default();
     let mut help = false;
     let mut version = false;
@@ -230,6 +241,7 @@ pub fn run_from_argv() -> ExitCode {
         "clear-logs" => port::cmd_clear_logs(opts.yes),
         "check" => port::cmd_check(opts.target.clone()),
         "clear-cache" => port::cmd_clear_cache(opts.yes),
+        "tui" => Ok(serde_json::Value::Null),
         "help" => port::print_help(),
         _ => Ok(serde_json::Value::Null),
     };
