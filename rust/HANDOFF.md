@@ -18,6 +18,9 @@
 - W7 done: TUI reads config/backups/version through the core; backup/restore stay on the
   CLI for cancellation. Version is 2.0.0. `rust/install.sh` builds/installs both binaries;
   `rust/cutover.sh` backs up and replaces the Python command.
+- Post-lift hardening: `rust/app/tests/cli_integration.rs` covers the excluded CLI paths;
+  `rust/smoke-github.sh` passed a live backup/list/restore/delete smoke; root `install.sh`
+  and `tsctl` now install the Rust binaries.
 - Fallback rate: 0%. Cutover is the user's call; the Python source is still reference.
 - `rust/fixtures/unit-home/.config/termux-sync/config.json` is intentionally invalid:
   one recorded `load_config` failure case depends on it. Do not "fix" it.

@@ -355,3 +355,20 @@ command, installs the Rust binaries and documents rollback.
 
 Consequences: `--version` and help show 2.0.0. The root `install.sh` and `tsctl` still
 describe the Python distribution until the user retires them; cutover uses `rust/`.
+
+## ADR-026: Post-lift hardening checks
+
+Status: accepted (2026-11-25)
+
+Context: The first lift left three practical gaps: CLI commands were covered only by unit
+and smoke tests, GitHub storage had no live call, and the root installer still described
+Python.
+
+Decision: Add `rust/app/tests/cli_integration.rs` for backup/list/restore/delete, status,
+logs, check, cache clearing, export/import, setup/schedule, version and parse errors.
+Add `rust/smoke-github.sh` for a token-backed live backup/list/restore/delete smoke. Make
+root `install.sh` delegate to `rust/install.sh` and rewrite `tsctl` for the Rust binaries.
+
+Consequences: The excluded app cases are backed by binary-level integration tests. GitHub
+has a repeatable live smoke; it was run on a temporary private repository and the
+repository was deleted. `tsctl` no longer downloads or installs Python.

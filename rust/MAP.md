@@ -43,6 +43,7 @@ Sources of truth:
 | ADR-023 | App replay keeps deterministic non-interactive cases | accepted |
 | ADR-024 | TUI reads through core, mutations stay CLI | accepted |
 | ADR-025 | Version 2.0.0 and native install | accepted |
+| ADR-026 | Post-lift integration tests and installer cleanup | accepted |
 
 ## Units
 
@@ -96,6 +97,8 @@ The unit gate runs once at the end.
 - App replay: 10/10 stable cases, fallback 0%.
 - W7 done: TUI reads config/backups/version through the core; version 2.0.0;
   `rust/install.sh` and `rust/cutover.sh` added.
+- Post-lift: 5 CLI integration tests added; GitHub live smoke passed on a temporary
+  private repo; root `install.sh` and `tsctl` now install the Rust binaries.
 - Fallback rate: 0%. Cutover is the user's call.
 - Last replay report: `rust/app-cases/replay-report.md`.
 

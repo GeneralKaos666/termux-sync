@@ -226,7 +226,7 @@ mod tests {
 case "$1" in
   lsjson) printf '[{"Name":"termux_backup_20250101_120000","ModTime":"2025-01-01T00:00:00"}]';;
   cat) printf '{"name":"termux_backup_20250101_120000","files":{},"packages":[]}';;
-  copy) if [ -n "$3" ]; then mkdir -p "$3"; printf data > "$3/copied"; fi;;
+  copy) case "$3" in /*) mkdir -p "$3"; printf data > "$3/copied";; esac;;
   purge) :;;
 esac
 "#,
